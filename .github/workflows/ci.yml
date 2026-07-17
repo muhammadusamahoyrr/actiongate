@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: go mod tidy is clean
+        run: go mod tidy -diff
+
+      - name: gofmt is clean
+        run: test -z "$(gofmt -l .)"
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+
+      # Testcontainers uses the runner's Docker daemon; the transition suite
+      # runs against real postgres:16-alpine, never mocks.
+      # -p 4 bounds simultaneous packages: each integration package runs its
+      # own Postgres container.
+      - name: test (race + coverage)
+        run: go test -race ./... -count=1 -p 4 -coverprofile=coverage.out
+
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -5
+
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+      - name: buf lint
+        run: buf lint
+      - name: buf generate compiles
+        run: buf generate

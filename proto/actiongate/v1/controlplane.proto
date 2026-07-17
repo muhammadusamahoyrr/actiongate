@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+package actiongate.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "actiongate/gen/actiongate/v1;actiongatev1";
+
+// ControlPlaneService is the complete gateway <-> control-plane surface.
+// Unary-only by design: pending approvals are resumed by polling
+// GetActionStatus, never by held connections or streams (plan ADR-7).
+// This file is a permanent compatibility contract — customer gateways run
+// old versions forever. Buf breaking-change checks gate every change.
+service ControlPlaneService {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc SubmitAction(SubmitActionRequest) returns (SubmitActionResponse);
+  rpc GetActionStatus(GetActionStatusRequest) returns (GetActionStatusResponse);
+  rpc ReportOutcome(ReportOutcomeRequest) returns (ReportOutcomeResponse);
+}
+
+message EnrollRequest {
+  uint32 protocol_version = 1;
+  string enrollment_token = 2;
+  string gateway_name = 3;
+  // Ed25519 public key; the control plane verifies outcome receipts with it.
+  bytes gateway_public_key = 4;
+}
+
+message EnrollResponse {
+  string gateway_id = 1;
+  string tenant_id = 2;
+  bytes gateway_credential = 3;
+  // Pinned by the gateway; refreshed with overlapping validity on rotation.
+  repeated SigningKey control_plane_keys = 4;
+}
+
+message SigningKey {
+  string key_id = 1;
+  string algorithm = 2; // "ed25519"
+  bytes public_key = 3;
+  google.protobuf.Timestamp not_after = 4;
+}
+
+message SubmitActionRequest {
+  uint32 protocol_version = 1;
+  // Server-minted at connect; combined with native_request_id to form the
+  // idempotency key (plan §8) — native IDs are never trusted alone.
+  string session_id = 2;
+  string native_request_id = 3;
+  string agent_id = 4;
+  string tool_name = 5;
+  google.protobuf.Struct tool_params = 6;
+  string environment = 7;
+  string correlation_id = 8;
+  // Delegation chain (plan §22): the action of the agent that spawned this
+  // agent, empty for a root action. Captured forever, graphed never (yet).
+  string parent_action_id = 9;
+}
+
+message SubmitActionResponse {
+  oneof result {
+    ActionOutcome completed = 1;   // terminal outcome already known (resume)
+    PendingAction pending = 2;     // awaiting approval; resume via GetActionStatus
+    DeniedAction denied = 3;
+    AuthorizedAction authorized = 4; // auto-allow fast path: execute under this grant
+  }
+}
+
+message AuthorizedAction {
+  string action_id = 1;
+  GrantEnvelope grant = 2;
+}
+
+message PendingAction {
+  string action_id = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  google.protobuf.Timestamp poll_after = 3;
+}
+
+message DeniedAction {
+  string action_id = 1;
+  string matched_rule_id = 2;
+  // Human-readable evaluation trace (plan §22 explainability): which rule,
+  // which conditions, what matched. A blocked developer must see exactly why.
+  string explanation = 3;
+}
+
+message GetActionStatusRequest {
+  uint32 protocol_version = 1;
+  string action_id = 2;
+}
+
+message GetActionStatusResponse {
+  string action_id = 1;
+  ActionState state = 2;
+  // Present exactly when state == ACTION_STATE_EXECUTION_AUTHORIZED.
+  GrantEnvelope grant = 3;
+  // Present in terminal execution states.
+  ActionOutcome outcome = 4;
+  google.protobuf.Timestamp poll_after = 5;
+}
+
+// The signature covers grant_bytes exactly as transmitted. Verify the
+// signature FIRST, then unmarshal grant_bytes as ExecutionGrant. Never
+// re-serialize before verifying — there is deliberately no canonicalization
+// step anywhere on the signature path (plan §20.2, round 5 item 5).
+message GrantEnvelope {
+  bytes grant_bytes = 1; // serialized ExecutionGrant
+  bytes signature = 2;   // detached, over grant_bytes
+  string key_id = 3;
+  string algorithm = 4;
+}
+
+message ExecutionGrant {
+  string grant_id = 1;
+  string action_id = 2;
+  string tenant_id = 3;
+  string tool_name = 4;
+  // The request fingerprint (hash of agent_id, tool_name, and canonical
+  // params — plan §8 layer 2), binding the grant to the exact submitted
+  // content. The gateway recomputes it from its local copy of the request
+  // and refuses to execute on mismatch.
+  bytes params_hash = 5;
+  google.protobuf.Timestamp expires_at = 6; // TTL <= 60s, single-use
+}
+
+message ReportOutcomeRequest {
+  uint32 protocol_version = 1;
+  ReceiptEnvelope receipt = 2;
+}
+
+// Same rule as GrantEnvelope: signature over receipt_bytes exactly as sent,
+// signed with the gateway's enrolled key. Outcome events derived from this
+// receipt are recorded as gateway-attested facts (plan §5).
+message ReceiptEnvelope {
+  bytes receipt_bytes = 1; // serialized OutcomeReceipt
+  bytes signature = 2;
+  string key_id = 3;
+  string algorithm = 4;
+}
+
+message OutcomeReceipt {
+  string grant_id = 1;
+  string action_id = 2;
+  ExecutionStatus status = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp completed_at = 5;
+  string error = 6;
+  // Which sub-steps completed, for PARTIALLY_SUCCEEDED — never rounded
+  // up or down (plan §6).
+  repeated string side_effects = 7;
+  string output_ref = 8;
+}
+
+message ReportOutcomeResponse {
+  bool accepted = 1;
+  // Single-use enforcement: an outcome for this grant was already recorded.
+  bool duplicate = 2;
+}
+
+message ActionOutcome {
+  string action_id = 1;
+  ExecutionStatus status = 2;
+  string output_ref = 3;
+  string error = 4;
+}
+
+// Mirrors plan §7 exactly; the authoritative table lives in
+// internal/domain and is enforced by the transition primitive.
+enum ActionState {
+  ACTION_STATE_UNSPECIFIED = 0;
+  ACTION_STATE_CREATED = 1;
+  ACTION_STATE_EVALUATED = 2;
+  ACTION_STATE_PENDING_APPROVAL = 3;
+  ACTION_STATE_APPROVED = 4;
+  ACTION_STATE_EXECUTION_AUTHORIZED = 5;
+  ACTION_STATE_EXECUTING = 6;
+  ACTION_STATE_SUCCEEDED = 7;
+  ACTION_STATE_FAILED = 8;
+  ACTION_STATE_PARTIALLY_SUCCEEDED = 9;
+  ACTION_STATE_OUTCOME_UNKNOWN = 10;
+  ACTION_STATE_RECONCILED = 11;
+  ACTION_STATE_DENIED = 12;
+  ACTION_STATE_EXPIRED = 13;
+  ACTION_STATE_CANCELLED = 14;
+  ACTION_STATE_SUPERSEDED_BY_POLICY = 15;
+}
+
+enum ExecutionStatus {
+  EXECUTION_STATUS_UNSPECIFIED = 0;
+  EXECUTION_STATUS_SUCCEEDED = 1;
+  EXECUTION_STATUS_FAILED = 2;
+  EXECUTION_STATUS_PARTIALLY_SUCCEEDED = 3;
+  EXECUTION_STATUS_OUTCOME_UNKNOWN = 4;
+}
