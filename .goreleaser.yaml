@@ -1,0 +1,56 @@
+version: 2
+
+project_name: actiongate
+
+builds:
+  - id: gateway
+    main: ./cmd/gateway
+    binary: gateway
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+  - id: controlplane
+    main: ./cmd/controlplane
+    binary: controlplane
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+  - id: verify
+    main: ./cmd/verify
+    binary: verify
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - migrations/**
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  footer: |
+    ## Install
+
+    Download the archive for your platform above, extract it, and run the
+    binaries directly — no dependencies needed. The archive includes the
+    database `migrations/` for the control plane.
+
+    - `gateway` — runs on each developer machine (enroll, check/report, MCP proxy)
+    - `controlplane` — the policy/approval/audit server (+ `admin` subcommands)
+    - `verify` — standalone offline audit-chain verifier

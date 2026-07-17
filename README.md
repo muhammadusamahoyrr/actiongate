@@ -37,7 +37,15 @@ Three properties make it different:
 [goose](https://github.com/pressly/goose) migration tool
 (`go install github.com/pressly/goose/v3/cmd/goose@latest`).
 
-### 1. Get the code and binaries (2 min)
+### 1. Get the binaries (2 min)
+
+**No Go needed:** download the archive for your platform (Windows, macOS,
+Linux) from the
+[latest release](https://github.com/muhammadusamahoyrr/actiongate/releases/latest)
+and extract it — it contains `gateway`, `controlplane`, `verify`, and the
+database `migrations/` folder used in step 2.
+
+Or build from source (Go 1.25+):
 
 ```bash
 git clone https://github.com/muhammadusamahoyrr/actiongate
