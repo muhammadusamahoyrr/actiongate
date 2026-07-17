@@ -4,8 +4,9 @@ Out-of-process action firewall for coding agents (Claude Code / Cursor / Codex).
 The control plane decides and records; the customer-side gateway executes with
 local credentials, only ever under a signed ExecutionGrant.
 
-Architecture and all design decisions: `../plan.md.txt` (frozen at Round 8).
-Stack rationale: `../tech-stack.md`.
+Architecture and all design decisions: [docs/plan.md](docs/plan.md) (frozen
+at Round 8). Stack rationale: [docs/tech-stack.md](docs/tech-stack.md).
+Verification log: [VERIFICATION.md](VERIFICATION.md).
 
 ## Layout
 

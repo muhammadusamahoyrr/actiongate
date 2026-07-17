@@ -1,4 +1,4 @@
--- Core schema. Design authority: plan.md.txt §4 (domain model), §20.2 (index
+-- Core schema. Design authority: docs/plan.md §4 (domain model), §20.2 (index
 -- and transaction rules). Every unique constraint includes tenant_id — the
 -- future partition/shard key. River's queue tables are managed separately by
 -- `river migrate-up`.
