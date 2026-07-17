@@ -11,9 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"actiongate/internal/domain"
-	"actiongate/internal/servertest"
-	"actiongate/internal/transition"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/servertest"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 // fakeDownstream is the wrapped MCP server: it counts invocations so tests

@@ -23,13 +23,13 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	actiongatev1 "actiongate/gen/actiongate/v1"
-	"actiongate/gen/actiongate/v1/actiongatev1connect"
-	"actiongate/internal/approval"
-	"actiongate/internal/domain"
-	"actiongate/internal/execution"
-	"actiongate/internal/grant"
-	"actiongate/internal/orchestrator"
+	actiongatev1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
+	"github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1/actiongatev1connect"
+	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
+	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
+	"github.com/muhammadusamahoyrr/actiongate/internal/orchestrator"
 )
 
 const (

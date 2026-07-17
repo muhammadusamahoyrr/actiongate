@@ -17,11 +17,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/approval"
-	"actiongate/internal/domain"
-	"actiongate/internal/execution"
-	"actiongate/internal/policy"
-	"actiongate/internal/transition"
+	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
+	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 type Orchestrator struct {

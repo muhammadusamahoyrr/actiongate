@@ -1547,7 +1547,7 @@ const file_actiongate_v1_controlplane_proto_rawDesc = "" +
 	"\x06Enroll\x12\x1c.actiongate.v1.EnrollRequest\x1a\x1d.actiongate.v1.EnrollResponse\x12W\n" +
 	"\fSubmitAction\x12\".actiongate.v1.SubmitActionRequest\x1a#.actiongate.v1.SubmitActionResponse\x12`\n" +
 	"\x0fGetActionStatus\x12%.actiongate.v1.GetActionStatusRequest\x1a&.actiongate.v1.GetActionStatusResponse\x12Z\n" +
-	"\rReportOutcome\x12#.actiongate.v1.ReportOutcomeRequest\x1a$.actiongate.v1.ReportOutcomeResponseB+Z)actiongate/gen/actiongate/v1;actiongatev1b\x06proto3"
+	"\rReportOutcome\x12#.actiongate.v1.ReportOutcomeRequest\x1a$.actiongate.v1.ReportOutcomeResponseBIZGgithub.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1;actiongatev1b\x06proto3"
 
 var (
 	file_actiongate_v1_controlplane_proto_rawDescOnce sync.Once

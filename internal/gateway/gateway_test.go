@@ -13,10 +13,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"actiongate/internal/domain"
-	"actiongate/internal/queue"
-	"actiongate/internal/servertest"
-	"actiongate/internal/transition"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
+	"github.com/muhammadusamahoyrr/actiongate/internal/servertest"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 func enrolledGateway(t *testing.T, stack *servertest.Stack) *Gateway {

@@ -15,15 +15,15 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
-	"actiongate/internal/approval"
-	"actiongate/internal/execution"
-	"actiongate/internal/grant"
-	"actiongate/internal/notify"
-	"actiongate/internal/orchestrator"
-	"actiongate/internal/policy"
-	"actiongate/internal/queue"
-	"actiongate/internal/server"
-	"actiongate/internal/testdb"
+	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
+	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
+	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
+	"github.com/muhammadusamahoyrr/actiongate/internal/notify"
+	"github.com/muhammadusamahoyrr/actiongate/internal/orchestrator"
+	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
+	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
+	"github.com/muhammadusamahoyrr/actiongate/internal/server"
+	"github.com/muhammadusamahoyrr/actiongate/internal/testdb"
 )
 
 // SlackSigningSecret is the test stack's Slack signing secret, for

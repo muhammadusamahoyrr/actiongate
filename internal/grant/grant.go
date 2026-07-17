@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	actiongatev1 "actiongate/gen/actiongate/v1"
+	actiongatev1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
 )
 
 const (

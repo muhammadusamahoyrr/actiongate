@@ -22,7 +22,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 
-	"actiongate/internal/transition"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 // ApprovalExpiryArgs is the approval-deadline timer (plan §16: approval

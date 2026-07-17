@@ -15,10 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"actiongate/internal/domain"
-	"actiongate/internal/grant"
-	"actiongate/internal/queue"
-	"actiongate/internal/transition"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
+	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 const DefaultOutcomeDeadline = 5 * time.Minute

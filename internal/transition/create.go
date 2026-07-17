@@ -13,8 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/domain"
-	"actiongate/internal/fingerprint"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/fingerprint"
 )
 
 // ErrIdempotencyConflict: the idempotency key matched an existing action but

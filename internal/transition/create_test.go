@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 )
 
 func createTenant(t *testing.T, pool *pgxpool.Pool) uuid.UUID {

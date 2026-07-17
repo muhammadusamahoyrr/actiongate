@@ -23,10 +23,10 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	actiongatev1 "actiongate/gen/actiongate/v1"
-	"actiongate/gen/actiongate/v1/actiongatev1connect"
-	"actiongate/internal/fingerprint"
-	"actiongate/internal/grant"
+	actiongatev1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
+	"github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1/actiongatev1connect"
+	"github.com/muhammadusamahoyrr/actiongate/internal/fingerprint"
+	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
 )
 
 var (

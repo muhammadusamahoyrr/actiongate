@@ -12,10 +12,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/domain"
-	"actiongate/internal/queue"
-	"actiongate/internal/testdb"
-	"actiongate/internal/transition"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
+	"github.com/muhammadusamahoyrr/actiongate/internal/testdb"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 func newService(t *testing.T, pool *pgxpool.Pool, expiry time.Duration) *Service {

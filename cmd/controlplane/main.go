@@ -24,15 +24,15 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/slack-go/slack"
 
-	"actiongate/internal/approval"
-	"actiongate/internal/execution"
-	"actiongate/internal/grant"
-	"actiongate/internal/notify"
-	"actiongate/internal/orchestrator"
-	"actiongate/internal/policy"
-	"actiongate/internal/queue"
-	"actiongate/internal/seal"
-	"actiongate/internal/server"
+	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
+	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
+	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
+	"github.com/muhammadusamahoyrr/actiongate/internal/notify"
+	"github.com/muhammadusamahoyrr/actiongate/internal/orchestrator"
+	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
+	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
+	"github.com/muhammadusamahoyrr/actiongate/internal/seal"
+	"github.com/muhammadusamahoyrr/actiongate/internal/server"
 )
 
 func main() {

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"actiongate/internal/gateway"
-	"actiongate/internal/servertest"
-	"actiongate/internal/testdb"
+	"github.com/muhammadusamahoyrr/actiongate/internal/gateway"
+	"github.com/muhammadusamahoyrr/actiongate/internal/servertest"
+	"github.com/muhammadusamahoyrr/actiongate/internal/testdb"
 )
 
 func TestAdmin(t *testing.T) {

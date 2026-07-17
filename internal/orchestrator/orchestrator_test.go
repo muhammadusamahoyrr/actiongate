@@ -12,13 +12,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"actiongate/internal/approval"
-	"actiongate/internal/domain"
-	"actiongate/internal/execution"
-	"actiongate/internal/grant"
-	"actiongate/internal/policy"
-	"actiongate/internal/queue"
-	"actiongate/internal/testdb"
+	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
+	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
+	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
+	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
+	"github.com/muhammadusamahoyrr/actiongate/internal/testdb"
 )
 
 type world struct {

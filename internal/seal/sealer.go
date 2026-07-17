@@ -23,7 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/auditenc"
+	"github.com/muhammadusamahoyrr/actiongate/internal/auditenc"
 )
 
 const (

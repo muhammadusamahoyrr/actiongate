@@ -1,4 +1,4 @@
-module actiongate
+module github.com/muhammadusamahoyrr/actiongate
 
 go 1.25.0
 

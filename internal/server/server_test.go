@@ -23,11 +23,11 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	actiongatev1 "actiongate/gen/actiongate/v1"
-	"actiongate/gen/actiongate/v1/actiongatev1connect"
-	"actiongate/internal/grant"
-	"actiongate/internal/queue"
-	"actiongate/internal/servertest"
+	actiongatev1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
+	"github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1/actiongatev1connect"
+	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
+	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
+	"github.com/muhammadusamahoyrr/actiongate/internal/servertest"
 )
 
 type wireWorld struct {

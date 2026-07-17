@@ -5,10 +5,10 @@
 package actiongatev1connect
 
 import (
-	v1 "actiongate/gen/actiongate/v1"
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
+	v1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
 	http "net/http"
 	strings "strings"
 )

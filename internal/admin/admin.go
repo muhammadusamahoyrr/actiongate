@@ -16,7 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/policy"
+	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
 )
 
 // CreateTenant provisions a new tenant with its version-1 policy snapshot.

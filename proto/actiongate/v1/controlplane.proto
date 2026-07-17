@@ -5,7 +5,7 @@ package actiongate.v1;
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "actiongate/gen/actiongate/v1;actiongatev1";
+option go_package = "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1;actiongatev1";
 
 // ControlPlaneService is the complete gateway <-> control-plane surface.
 // Unary-only by design: pending approvals are resumed by polling

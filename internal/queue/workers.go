@@ -10,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"actiongate/internal/domain"
-	"actiongate/internal/notify"
-	"actiongate/internal/transition"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/notify"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 // Workers here follow one shared rule for timer races (plan §20.2.4): a

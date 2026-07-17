@@ -10,9 +10,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	actiongatev1 "actiongate/gen/actiongate/v1"
-	"actiongate/internal/domain"
-	"actiongate/internal/transition"
+	actiongatev1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 var ErrUnknownGrant = errors.New("receipt references an unknown grant")

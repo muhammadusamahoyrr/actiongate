@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/admin"
+	"github.com/muhammadusamahoyrr/actiongate/internal/admin"
 )
 
 // Admin subcommands (operator provisioning):

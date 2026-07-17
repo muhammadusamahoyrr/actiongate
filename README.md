@@ -45,11 +45,15 @@ make migrate    # goose up against $DATABASE_URL
 make river      # river migrate-up against $DATABASE_URL
 ```
 
-## Module name
+## Install
 
-The module is intentionally bare (`actiongate`) until a public home is chosen;
-rename in `go.mod` + imports when publishing (recommended license: Apache-2.0,
-plan §21.4).
+```
+go install github.com/muhammadusamahoyrr/actiongate/cmd/gateway@latest
+go install github.com/muhammadusamahoyrr/actiongate/cmd/controlplane@latest
+go install github.com/muhammadusamahoyrr/actiongate/cmd/verify@latest
+```
+
+Licensed under Apache-2.0 (see LICENSE).
 
 ## Implementation order (from plan Round 6/7)
 

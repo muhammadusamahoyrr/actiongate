@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	actiongatev1 "actiongate/gen/actiongate/v1"
+	actiongatev1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
 )
 
 // Receipts are the gateway-signed half of the protocol: outcome facts the

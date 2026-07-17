@@ -28,7 +28,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"actiongate/internal/gateway"
+	"github.com/muhammadusamahoyrr/actiongate/internal/gateway"
 )
 
 func main() {

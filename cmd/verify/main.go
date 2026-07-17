@@ -21,7 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/seal"
+	"github.com/muhammadusamahoyrr/actiongate/internal/seal"
 )
 
 type keyFlags map[string]ed25519.PublicKey

@@ -22,7 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 )
 
 var (

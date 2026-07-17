@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 )
 
 func engine(t *testing.T) *Engine {

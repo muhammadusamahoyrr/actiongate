@@ -8,7 +8,7 @@ import (
 
 	"github.com/slack-go/slack"
 
-	"actiongate/internal/approval"
+	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
 )
 
 // handleSlackInteraction resolves approvals from Slack button clicks. The

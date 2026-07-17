@@ -21,7 +21,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 
-	"actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 )
 
 type DecisionKind string

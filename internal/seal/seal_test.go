@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/testdb"
+	"github.com/muhammadusamahoyrr/actiongate/internal/testdb"
 )
 
 func newSealer(t *testing.T, pool *pgxpool.Pool, margin time.Duration) (*Sealer, map[string]ed25519.PublicKey) {

@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/domain"
-	"actiongate/internal/testdb"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/testdb"
 )
 
 // The suite runs against real Postgres: the primitives under test (CAS,

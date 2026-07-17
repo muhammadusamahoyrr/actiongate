@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"actiongate/internal/auditenc"
+	"github.com/muhammadusamahoyrr/actiongate/internal/auditenc"
 )
 
 // Report is the outcome of an independent chain verification. OK means every

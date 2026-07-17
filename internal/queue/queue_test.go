@@ -13,10 +13,10 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
-	"actiongate/internal/domain"
-	"actiongate/internal/notify"
-	"actiongate/internal/testdb"
-	"actiongate/internal/transition"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/notify"
+	"github.com/muhammadusamahoyrr/actiongate/internal/testdb"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 func setupPool(t *testing.T) *pgxpool.Pool {

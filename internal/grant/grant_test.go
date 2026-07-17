@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
-	actiongatev1 "actiongate/gen/actiongate/v1"
+	actiongatev1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
 )
 
 func issue(t *testing.T) ([]byte, map[string]ed25519.PublicKey, IssueInput) {
