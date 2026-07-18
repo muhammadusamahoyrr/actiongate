@@ -1,0 +1,19 @@
+{
+  "default_decision": "allow",
+  "rules": [
+    {
+      "id": "deny-secrets-native",
+      "description": "Block Read/Edit/Write on secret files — the one line nobody should relax",
+      "condition": "tool_name in [\"Read\", \"Edit\", \"Write\", \"NotebookEdit\"] && has(params.file_path) && (params.file_path.contains(\".env\") || params.file_path.contains(\"id_rsa\") || params.file_path.contains(\".pem\"))",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "approve-catastrophic-bash",
+      "description": "Only truly catastrophic shell commands wait for a human",
+      "condition": "tool_name == \"Bash\" && has(params.command) && (params.command.contains(\"rm -rf /\") || params.command.contains(\"rm -rf ~\") || params.command.contains(\"rm -rf C:\") || params.command.contains(\"dd if=\") || params.command.contains(\"mkfs\") || params.command.contains(\"DROP DATABASE\") || params.command.contains(\":(){\"))",
+      "decision": "requires_approval",
+      "risk_classification": "destructive"
+    }
+  ]
+}

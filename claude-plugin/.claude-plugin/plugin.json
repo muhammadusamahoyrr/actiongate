@@ -1,0 +1,12 @@
+{
+  "name": "actiongate",
+  "version": "0.1.0",
+  "description": "Action firewall for Claude Code: block secret reads, gate destructive commands on human approval, and keep a tamper-evident audit log.",
+  "author": {
+    "name": "Muhammad Usama",
+    "url": "https://github.com/muhammadusamahoyrr/actiongate"
+  },
+  "repository": "https://github.com/muhammadusamahoyrr/actiongate",
+  "license": "Apache-2.0",
+  "keywords": ["security", "firewall", "approvals", "audit", "governance"]
+}

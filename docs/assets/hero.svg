@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420" font-family="ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace" font-size="14">
+  <!-- terminal chrome -->
+  <rect width="760" height="420" rx="10" fill="#0d1117" stroke="#30363d"/>
+  <rect width="760" height="34" rx="10" fill="#161b22"/>
+  <rect y="24" width="760" height="10" fill="#161b22"/>
+  <circle cx="22" cy="17" r="5.5" fill="#f85149"/>
+  <circle cx="42" cy="17" r="5.5" fill="#d29922"/>
+  <circle cx="62" cy="17" r="5.5" fill="#3fb950"/>
+  <text x="380" y="21" text-anchor="middle" fill="#8b949e" font-size="12">actiongate — the action firewall for AI coding agents</text>
+
+  <!-- Each line owns one 26s looping opacity track; discrete steps = staged reveal. -->
+  <g fill="#c9d1d9">
+    <text x="24" y="66">
+      <tspan fill="#3fb950">$</tspan> actiongate protect claude-code
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.98;1" values="1;1;0"/>
+    </text>
+    <text x="24" y="90" fill="#3fb950" opacity="0">✓ project governed — policy pack: claude-code
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.035;0.98;1" values="0;1;1;0"/>
+    </text>
+
+    <text x="24" y="128" opacity="0">
+      <tspan fill="#bc8cff">claude&gt;</tspan> read my .env
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.115;0.98;1" values="0;1;1;0"/>
+    </text>
+    <text x="24" y="152" fill="#f85149" opacity="0">🛑 blocked: rule deny-secrets-native — secrets never reach the model
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.19;0.98;1" values="0;1;1;0"/>
+    </text>
+
+    <text x="24" y="190" opacity="0">
+      <tspan fill="#bc8cff">claude&gt;</tspan> rm -rf ./build
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.31;0.98;1" values="0;1;1;0"/>
+    </text>
+    <text x="24" y="214" fill="#d29922" opacity="0">⏳ paused — destructive command is waiting for a human…
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.38;0.98;1" values="0;1;1;0"/>
+    </text>
+    <text x="24" y="238" opacity="0">
+      <tspan fill="#8b949e">[Slack]</tspan> <tspan fill="#3fb950">✅ Approved</tspan> by @usama — “ok, it’s just the build dir”
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.5;0.98;1" values="0;1;1;0"/>
+    </text>
+    <text x="24" y="262" fill="#3fb950" opacity="0">✓ executed under a signed, single-use, 60-second grant
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.58;0.98;1" values="0;1;1;0"/>
+    </text>
+
+    <text x="24" y="300" opacity="0">
+      <tspan fill="#3fb950">$</tspan> verify
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.69;0.98;1" values="0;1;1;0"/>
+    </text>
+    <text x="24" y="324" fill="#58a6ff" opacity="0">{"ok":true, "epochs":36, "events_sealed":140, "problems":null}
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.75;0.98;1" values="0;1;1;0"/>
+    </text>
+    <text x="24" y="348" fill="#8b949e" opacity="0">every step above is in a hash-chained log nobody can quietly rewrite
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.78;0.98;1" values="0;1;1;0"/>
+    </text>
+
+    <text x="380" y="392" text-anchor="middle" fill="#c9d1d9" font-weight="bold" opacity="0">Harmless passes · Forbidden is blocked · Dangerous waits for a human · All of it provable
+      <animate attributeName="opacity" dur="26s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;0.86;0.98;1" values="0;1;1;0"/>
+    </text>
+  </g>
+</svg>

@@ -5,3 +5,7 @@
 *.out
 .env
 .env.*
+# demo fixture with fake-but-realistic keys — never commit
+demo_live/secret.env
+# internal session-handoff notes — local only
+NEXT_SESSION.md

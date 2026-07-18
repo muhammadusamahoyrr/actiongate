@@ -1,6 +1,7 @@
-// The control-plane service (plan §2): ConnectRPC surface, River workers,
-// and the Sealer loop in one deployable. Goose migrations run via
-// `make migrate` before start; River's own schema is applied at boot.
+// The control-plane service (plan §2): env-configured entry point over the
+// shared internal/controlplane assembly. Goose migrations run via
+// `make migrate` (or `actiongate up`) before start; River's own schema is
+// applied at boot.
 package main
 
 import (
@@ -10,29 +11,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/slack-go/slack"
 
-	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
-	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
-	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
-	"github.com/muhammadusamahoyrr/actiongate/internal/notify"
-	"github.com/muhammadusamahoyrr/actiongate/internal/orchestrator"
-	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
-	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
-	"github.com/muhammadusamahoyrr/actiongate/internal/seal"
-	"github.com/muhammadusamahoyrr/actiongate/internal/server"
+	"github.com/muhammadusamahoyrr/actiongate/internal/controlplane"
 )
 
 func main() {
@@ -57,129 +44,32 @@ func run() error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	databaseURL := k.String("database_url")
-	if databaseURL == "" {
+	if k.String("database_url") == "" {
 		return errors.New("AG_DATABASE_URL is required")
 	}
-	listen := k.String("listen")
-	if listen == "" {
-		listen = ":8091"
-	}
-	tokenSecret := k.String("token_secret")
-	if len(tokenSecret) < 32 {
+	if len(k.String("token_secret")) < 32 {
 		return errors.New("AG_TOKEN_SECRET must be at least 32 bytes")
 	}
-
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-	defer pool.Close()
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("ping: %w", err)
-	}
-	if err := queue.Migrate(ctx, pool); err != nil {
-		return err
-	}
-
 	grantSeed, err := seedFromConfig(k.String("grant_key_seed"), "grant")
 	if err != nil {
 		return err
-	}
-	grantSigner, grantPub, err := grant.NewSignerFromSeed("grant-1", grantSeed)
-	if err != nil {
-		return fmt.Errorf("grant signer: %w", err)
 	}
 	epochSeed, err := seedFromConfig(k.String("epoch_key_seed"), "epoch")
 	if err != nil {
 		return err
 	}
-	epochSigner, _, err := seal.NewEd25519SignerFromSeed("epoch-1", epochSeed)
-	if err != nil {
-		return fmt.Errorf("epoch signer: %w", err)
-	}
 
-	insertClient, err := queue.NewInsertOnlyClient(pool)
-	if err != nil {
-		return fmt.Errorf("river insert client: %w", err)
-	}
-	coordinator := &execution.Coordinator{Pool: pool, Queue: insertClient, Signer: grantSigner}
-	approvals := &approval.Service{
-		Pool: pool, Queue: insertClient,
-		TokenSecret: []byte(tokenSecret),
-		Router:      approval.Router{Default: k.String("approver_default")},
-	}
-	if approvals.Router.Default == "" {
-		approvals.Router.Default = "team-lead"
-	}
-	engine, err := policy.NewEngine()
-	if err != nil {
-		return fmt.Errorf("policy engine: %w", err)
-	}
-	orch := &orchestrator.Orchestrator{
-		Pool: pool, Engine: engine, Approvals: approvals, Coordinator: coordinator,
-	}
-
-	var port notify.Port = notify.LogPort{}
-	if slackToken := k.String("slack_bot_token"); slackToken != "" {
-		port = notify.SlackPort{
-			Client:         slack.New(slackToken),
-			DefaultChannel: k.String("slack_channel"),
-		}
-		slog.Info("slack notifications enabled", "default_channel", k.String("slack_channel"))
-	}
-	workers, err := queue.NewWorkers(pool, port)
-	if err != nil {
-		return fmt.Errorf("workers: %w", err)
-	}
-	if err := execution.RegisterWorker(workers, coordinator); err != nil {
-		return fmt.Errorf("authorize worker: %w", err)
-	}
-	workerClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
-		Workers: workers,
-	})
-	if err != nil {
-		return fmt.Errorf("river client: %w", err)
-	}
-	if err := workerClient.Start(ctx); err != nil {
-		return fmt.Errorf("river start: %w", err)
-	}
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = workerClient.Stop(stopCtx)
-	}()
-
-	sealer := &seal.Sealer{Pool: pool, Signer: epochSigner}
-	go func() {
-		if err := sealer.Run(ctx, seal.DefaultInterval); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("sealer stopped", "error", err)
-		}
-	}()
-
-	srv := &server.Server{
-		Pool: pool, Orchestrator: orch, Approvals: approvals, Coordinator: coordinator,
-		GrantKeyID: grantSigner.KeyID(), GrantPublicKey: grantPub,
+	return controlplane.Run(ctx, controlplane.Config{
+		DatabaseURL:        k.String("database_url"),
+		Listen:             k.String("listen"),
+		TokenSecret:        k.String("token_secret"),
+		GrantKeySeed:       grantSeed,
+		EpochKeySeed:       epochSeed,
+		ApproverDefault:    k.String("approver_default"),
+		SlackBotToken:      k.String("slack_bot_token"),
 		SlackSigningSecret: k.String("slack_signing_secret"),
-	}
-	httpServer := &http.Server{
-		Addr:              listen,
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdownCtx)
-	}()
-
-	slog.Info("control plane listening", "addr", listen, "grant_key", grantSigner.KeyID())
-	if err := httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+		SlackChannel:       k.String("slack_channel"),
+	})
 }
 
 // seedFromConfig decodes a base64 32-byte seed, or generates an ephemeral

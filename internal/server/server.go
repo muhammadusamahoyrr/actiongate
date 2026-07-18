@@ -64,6 +64,7 @@ func (s *Server) Handler() http.Handler {
 	path, h := actiongatev1connect.NewControlPlaneServiceHandler(s,
 		connect.WithInterceptors(s.authInterceptor()))
 	mux.Handle(path, h)
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /approval/callback", s.handleApprovalCallback)
 	if s.SlackSigningSecret != "" {
 		mux.HandleFunc("POST /slack/interaction", s.handleSlackInteraction)
@@ -340,6 +341,20 @@ func (s *Server) ReportOutcome(ctx context.Context, req *connect.Request[actiong
 		Accepted:  accepted,
 		Duplicate: duplicate,
 	}), nil
+}
+
+// handleHealthz reports liveness plus database reachability, so "the
+// process is up but Postgres is gone" is distinguishable from healthy.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if err := s.Pool.Ping(ctx); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "degraded", "database": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // handleApprovalCallback is the channel-agnostic resolution endpoint: the

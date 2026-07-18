@@ -1,0 +1,33 @@
+{
+  "default_decision": "allow",
+  "rules": [
+    {
+      "id": "deny-secrets-native",
+      "description": "Block Read/Edit/Write on secret and credential files",
+      "condition": "tool_name in [\"Read\", \"Edit\", \"Write\", \"NotebookEdit\"] && has(params.file_path) && (params.file_path.contains(\".env\") || params.file_path.contains(\"id_rsa\") || params.file_path.contains(\"id_ed25519\") || params.file_path.contains(\".pem\") || params.file_path.contains(\".ssh\") || params.file_path.contains(\".aws\") || params.file_path.contains(\"credentials\"))",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "deny-secrets-grep",
+      "description": "Block grepping inside secret material",
+      "condition": "tool_name == \"Grep\" && has(params.path) && (params.path.contains(\".env\") || params.path.contains(\".ssh\") || params.path.contains(\".aws\") || params.path.contains(\".pem\"))",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "approve-all-bash",
+      "description": "Every shell command waits for a human",
+      "condition": "tool_name == \"Bash\" && has(params.command)",
+      "decision": "requires_approval",
+      "risk_classification": "shell"
+    },
+    {
+      "id": "approve-mutations",
+      "description": "Every file mutation waits for a human",
+      "condition": "tool_name in [\"Edit\", \"Write\", \"NotebookEdit\"]",
+      "decision": "requires_approval",
+      "risk_classification": "mutation"
+    }
+  ]
+}

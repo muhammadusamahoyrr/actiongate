@@ -366,6 +366,102 @@ Full gate: `gofmt` clean, `go vet` 0, `golangci-lint` 0 (one gosec taint
 finding in a test fake fixed by not echoing input), 13 packages `-race`
 green.
 
+## Milestone: `actiongate up` + `actiongate protect claude-code` (2026-07-18)
+
+The P0 onboarding path (roadmap in NEXT_SESSION.md §3). New `cmd/actiongate`
+binary; the control-plane assembly extracted verbatim from `cmd/controlplane`
+into `internal/controlplane.Run(ctx, Config)` (the binary is now env parsing
+over the shared core); goose migrations embedded (`migrations/embed.go`) so
+`up` self-migrates without the goose CLI; the claude-code policy pack
+embedded (`policies/embed.go`); `demo_live/aghook` promoted to `cmd/ag-hook`
+with env config (`AG_HOOK_AGENT`/`AG_HOOK_WAIT`/`AG_HOOK_GATEWAY`). The
+server gained `GET /healthz` (liveness + DB ping).
+
+`up`: check-then-create at every step — docker container (created with
+`--restart unless-stopped`, retrofitted onto existing containers), embedded
+migrations, tenant provisioning that adopts a recorded tenant id after a DB
+reset, enrollment reuse validated against the `gateways` table, one
+self-test action round-tripped (submit → grant verified locally → outcome
+reported), then the control plane serves in the foreground. Secrets and
+seeds persist in the user config dir (`dev.json`, 0600). A second `up`
+detects the running instance, reuses it, and exits 0. `protect`: merges the
+PreToolUse hook into `.claude/settings.local.json` (backup on first
+install, idempotent replacement of its own entry, everything else
+preserved), hook command rendered as the 8.3 short path in POSIX form
+(space-free — the Git Bash backslash/space trap), policy pack applied only
+when the newest snapshot's content hash differs.
+
+Verified live on this machine: fresh `up` against the existing demo
+database adopted tenant `2f871fa3…` and reproduced the exact known epoch
+public key (`vPFT7Qr4…`) — then `verify` returned `ok:true` over 35 epochs
+/ 132 events including the new self-test actions. Hook tests through the
+installed short path: `.env` Read and Grep denied with rule names, normal
+Read and `ls` allowed, `rm -rf` paused inside the hook until the approval
+callback released it (exit 0). Merge test: pre-existing `permissions` kept,
+exactly one hook entry after re-run, backup written. Full gate: `gofmt`
+clean, `go vet` 0, `golangci-lint` 0 (10 findings fixed or justified:
+errcheck in demo client, G115 real fix, G301 0750, ST1005 reword, recorded
+`#nosec` for the docker/gateway/demo exec calls and the shutdown-context
+G118), all test packages green.
+
+## Milestone: Windows service, starter packs, tamper demo, hero asset (2026-07-18)
+
+Item 4 (unattended restart) plus the Phase-1 launch assets. `actiongate
+service install|uninstall|start|stop|status|run`: a real SCM service
+(delayed auto-start, restart-on-failure recovery actions, file logging to
+the config dir) whose serve loop retries forever — config missing, Docker
+absent, Postgres down are all wait states, never exits. `service run
+-debug` runs the identical loop in a console. `service status` needs no
+elevation and reports the HTTP health truth hooks care about. Starter
+packs: `paranoid` (all shell + mutations gated) and `relaxed` (only
+catastrophes gated) join `claude-code`, all embedded, selectable via
+`protect -pack`, with compile + params-guard tests (`policies/packs_test.go`
+encodes the has() lesson). `actiongate tamper-demo`: three acts on a
+throwaway database — real events sealed by the real Sealer verify ok:true;
+a DBA disables the guard trigger and rewrites the ApprovalGranted row;
+re-verification returns ok:false naming the exact event; scratch DB
+dropped. Hero asset: `docs/assets/hero.svg`, animated SMIL terminal
+embedded in README.
+
+Verified live: debug service loop survived `docker stop actiongate-db`
+mid-run (healthz honestly degraded, then recovered) and a full cold start
+with the container stopped (loop started the DB itself, came up healthy);
+paranoid pack gated a plain `ls` (exit 3) and switching back re-allowed it;
+tamper demo produced the exact-event attribution on first run; SVG
+animation stages verified in Chrome. Full gate: `gofmt` clean, `go vet` 0,
+`golangci-lint` 0, 14 test packages green. Caveat recorded: `service
+install` itself requires an elevated terminal, which this session did not
+have — the SCM install/uninstall path compiles but is unexercised until the
+owner runs it once.
+
+## Milestone: service installed for real; plugin + SessionStart warning (2026-07-18)
+
+The elevated install ran (owner approved UAC): `actiongate service install`
+created the SCM service — verified RUNNING, `AUTO_START (DELAYED)`, correct
+binPath with `-config`, recovery actions `5s/30s/60s reset 86400`, logging
+to `service.log`, healthz ok. A non-elevated `Stop-Process` on the service
+gets **Access is denied** — the governed agent (running as the user) cannot
+kill its own firewall, a property we did not design for but gladly accept.
+Reboot auto-start is configured but awaits the owner's actual reboot;
+SCM-restart-after-crash is configured but was not exercisable unelevated.
+
+Full enforcement matrix through the installed service, all as predicted:
+`.env` Read blocked (rule named); `rm -rf` gated → approved via callback →
+hook released exit 0 (Slack itself unconfigured — no bot token);
+paranoid pack: `ls` and `Edit` wait (exit 3), plain Read passes, `.env`
+denied; relaxed pack: `rm -rf ./build` passes, `rm -rf /` waits, `.env`
+still denied; tamper-demo attributed the exact event again; the live chain
+then verified `ok:true` at 53 epochs / 204 events, unsealed tail 0.
+
+New: `ag-hook -warn` (SessionStart mode — silent when healthy, loud
+fail-closed warning when the stack is down, always exit 0; verified both
+paths), `protect` now installs the SessionStart hook alongside PreToolUse
+(merge verified: both entries, one each, user settings preserved), Slack
+credentials movable into dev.json for the service (services don't inherit
+shell env), and `claude-plugin/` (manifest + protect/status/tamper-demo
+commands wrapping the CLI). Gate: `golangci-lint` 0 (one G704 justified:
+health-probing the operator's own enrolled URL), tests green.
+
 ## Remaining limitations (honest list)
 
 - All three binaries are real: `controlplane` (+ `admin` subcommands),

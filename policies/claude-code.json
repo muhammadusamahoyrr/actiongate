@@ -1,0 +1,40 @@
+{
+  "default_decision": "allow",
+  "rules": [
+    {
+      "id": "deny-secrets-native",
+      "description": "Block Claude Code's built-in Read/Edit/Write on secret files",
+      "condition": "tool_name in [\"Read\", \"Edit\", \"Write\", \"NotebookEdit\"] && has(params.file_path) && (params.file_path.contains(\".env\") || params.file_path.contains(\"id_rsa\") || params.file_path.contains(\".pem\"))",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "deny-secrets-grep",
+      "description": "Block grepping the contents of secret files",
+      "condition": "tool_name == \"Grep\" && has(params.path) && params.path.contains(\".env\")",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "approve-destructive-bash",
+      "description": "Require human approval for destructive shell commands",
+      "condition": "tool_name == \"Bash\" && has(params.command) && (params.command.contains(\"rm -rf\") || params.command.contains(\"git push --force\") || params.command.contains(\"git push -f\") || params.command.contains(\"DROP TABLE\") || params.command.contains(\"dd if=\") || params.command.contains(\":(){\"))",
+      "decision": "requires_approval",
+      "risk_classification": "destructive"
+    },
+    {
+      "id": "deny-secrets",
+      "description": "MCP demo server: deny read_file of .env",
+      "condition": "tool_name == \"read_file\" && has(params.path) && params.path.contains(\".env\")",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "approve-destructive",
+      "description": "MCP demo server: gate destructive bash",
+      "condition": "tool_name == \"bash\" && has(params.command) && params.command.contains(\"rm -rf\")",
+      "decision": "requires_approval",
+      "risk_classification": "destructive"
+    }
+  ]
+}

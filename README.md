@@ -1,11 +1,17 @@
 # actiongate
 
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go 1.25+](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go)](go.mod)
+[![Latest release](https://img.shields.io/github/v/release/muhammadusamahoyrr/actiongate)](https://github.com/muhammadusamahoyrr/actiongate/releases/latest)
+
 **An action firewall for AI coding agents.** Claude Code, Cursor, and other
 agents can run shell commands, delete files, and touch production. actiongate
 sits between the agent and the real world: harmless actions pass instantly,
 forbidden actions are blocked with a named reason, and dangerous actions
 pause until a human taps **Approve** in Slack. Everything that happens is
 written to a tamper-evident audit log that anyone can verify independently.
+
+![actiongate in action: .env read blocked, rm -rf paused for Slack approval, audit chain verified](docs/assets/hero.svg)
 
 ```
  AI agent ──► gateway (your machine) ──► control plane (policy + approvals)
@@ -31,7 +37,84 @@ Three properties make it different:
 
 ---
 
-## Quickstart (15 minutes)
+## Quickstart (60 seconds)
+
+**Prerequisites:** Docker (it manages Postgres for you — or point
+`actiongate up -db-url` at any PostgreSQL 16+).
+
+Get the binaries from the
+[latest release](https://github.com/muhammadusamahoyrr/actiongate/releases/latest)
+or build from source (Go 1.25+): `go build -o bin/ ./cmd/...`
+
+```bash
+# 1. Start everything — Postgres, migrations, a tenant with the claude-code
+#    starter policy, gateway enrollment, control plane. Leave it running.
+actiongate up
+
+# 2. In the project you want governed (new terminal):
+actiongate protect claude-code
+
+# 3. Start Claude Code in that project and ask it to read your .env:
+#    🛑 blocked, with the rule named. Ask for `rm -rf` — it pauses for
+#    human approval. Everything is in the sealed audit log.
+```
+
+`actiongate up` is idempotent — re-run it any time (e.g. after a reboot) and
+it restarts whatever is missing. While it is down, protected projects fail
+closed: governed tools are blocked, never silently allowed.
+
+Want more than the quickstart? The **[User Guide](docs/GUIDE.md)** covers
+every step in depth — concepts, custom policies, approvals, audit
+verification, unattended operation, and troubleshooting.
+
+### Survive reboots (Windows service)
+
+One elevated command makes protection unattended:
+
+```powershell
+actiongate service install    # from an elevated terminal, once
+```
+
+The control plane then starts automatically after every reboot (delayed
+start), restarts itself on failure, waits patiently for Docker/Postgres to
+come up, and logs to `%APPDATA%\actiongate\service.log`. Check it any time
+with `actiongate service status` (no elevation needed). `actiongate
+service uninstall` removes it. Linux/macOS: run `controlplane` under
+systemd/launchd with the `AG_*` environment for now.
+
+### Starter policy packs
+
+Pick one at protect time — users shouldn't have to write CEL for tool
+schemas they've never seen:
+
+| Pack | Behavior |
+|---|---|
+| `claude-code` (default) | Secrets denied; destructive shell (`rm -rf`, force-push, `DROP TABLE`, …) waits for approval; everything else passes |
+| `paranoid` | Secrets denied; **every** shell command and file mutation waits for approval; reads pass |
+| `relaxed` | Secrets denied; only catastrophic commands (`rm -rf /`, `dd`, `mkfs`, `DROP DATABASE`, …) wait |
+
+```bash
+actiongate protect claude-code -pack paranoid
+```
+
+### See the tamper-evidence for yourself
+
+```bash
+actiongate tamper-demo
+```
+
+It seals real events on a throwaway database, verifies them (`ok:true`),
+then plays a malicious DBA: disables the append-only trigger and rewrites
+an approval. The database accepts the edit — and re-verification flips to
+`ok:false`, naming the exact tampered event. Your real chain is never
+touched.
+
+---
+
+## Manual setup (15 minutes)
+
+The step-by-step path — what `actiongate up` automates, useful for
+understanding the pieces or wiring a non-local deployment.
 
 **Prerequisites:** Go 1.25+, Docker (or any PostgreSQL 16+), and the
 [goose](https://github.com/pressly/goose) migration tool
@@ -42,8 +125,9 @@ Three properties make it different:
 **No Go needed:** download the archive for your platform (Windows, macOS,
 Linux) from the
 [latest release](https://github.com/muhammadusamahoyrr/actiongate/releases/latest)
-and extract it — it contains `gateway`, `controlplane`, `verify`, and the
-database `migrations/` folder used in step 2.
+and extract it — it contains `actiongate`, `gateway`, `ag-hook`,
+`controlplane`, `verify`, and the database `migrations/` folder used in
+step 2.
 
 Or build from source (Go 1.25+):
 
@@ -174,7 +258,17 @@ Every tool call now routes through your policy. Denied calls come back to
 the agent as an explained error; gated calls pause inside the agent's tool
 call until someone approves.
 
-**Agent hooks:** `gateway check` exits `0` allowed / `2` denied /
+**Claude Code:** `actiongate protect claude-code` does this for you — it
+installs the `ag-hook` PreToolUse bridge (Claude Code's built-in
+Read/Write/Bash tools never cross the MCP boundary, so the hook is the
+enforcement point that actually governs them), a SessionStart hook that
+warns loudly when the control plane is down (governed tools fail closed,
+never silently), and applies your chosen policy pack. A Claude Code
+plugin with `/actiongate:protect`, `/actiongate:status`, and
+`/actiongate:tamper-demo` commands lives in
+[claude-plugin/](claude-plugin/).
+
+**Other agent hooks:** `gateway check` exits `0` allowed / `2` denied /
 `3` timeout, and `gateway report` sends the outcome — the exact contract
 PreToolUse/PostToolUse-style hooks need.
 
@@ -218,7 +312,7 @@ signature-verified and recorded with the Slack user's identity.
 | `AG_LISTEN` | no (`:8091`) | Control plane listen address |
 | `AG_GRANT_KEY_SEED` / `AG_EPOCH_KEY_SEED` | recommended | Base64 32-byte signing seeds (ephemeral + warning if unset) |
 | `AG_APPROVER_DEFAULT` | no (`team-lead`) | Default approver target |
-| `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals |
+| `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals (for the Windows service, set `slack_bot_token` / `slack_signing_secret` / `slack_channel` in `%APPDATA%\actiongate\dev.json` instead — services don't see your shell env) |
 
 Windows note: PowerShell 5.1 mangles JSON arguments containing spaces; run
 `gateway check` from Git Bash, or avoid spaces in inline `-params`.
@@ -246,14 +340,21 @@ make proto     # regenerate ConnectRPC/protobuf code (then: make tidy)
 make migrate   # goose migrations against $DATABASE_URL
 ```
 
-Layout: `cmd/` (three binaries) · `internal/` (transition primitive, policy
+Layout: `cmd/` (five binaries: `actiongate`, `controlplane`, `gateway`,
+`ag-hook`, `verify`) · `internal/` (transition primitive, policy
 engine, approvals, grants, queue workers, sealer, MCP proxy) ·
 `migrations/` · `proto/` (the wire contract — breaking changes are blocked
 in CI).
 
-Design record: [docs/plan.md](docs/plan.md) (the architecture, frozen after
-8 review rounds) and [docs/tech-stack.md](docs/tech-stack.md). Verification
-log of every milestone: [VERIFICATION.md](VERIFICATION.md).
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [User Guide](docs/GUIDE.md) | Complete guide: concepts, installation, policies, approvals, verification, operations, troubleshooting |
+| [docs/plan.md](docs/plan.md) | The architecture design record, frozen after 8 review rounds |
+| [docs/tech-stack.md](docs/tech-stack.md) | Technology selection and the rationale behind it |
+| [VERIFICATION.md](VERIFICATION.md) | Verification log — what was actually tested and observed, milestone by milestone |
+| [claude-plugin/](claude-plugin/) | Claude Code plugin with `/actiongate:protect`, `/actiongate:status`, `/actiongate:tamper-demo` |
 
 ## License
 
