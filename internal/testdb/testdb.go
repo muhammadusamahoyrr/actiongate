@@ -6,8 +6,6 @@ package testdb
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -17,6 +15,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/muhammadusamahoyrr/actiongate/migrations"
 )
 
 // SetupPool starts a Postgres 18 container, applies all Goose migrations,
@@ -49,10 +49,15 @@ func SetupPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("open for migrations: %v", err)
 	}
 	defer func() { _ = sqldb.Close() }()
+	// Use the embedded migrations FS (like `actiongate up`), so tests never
+	// depend on the process working directory. goose.SetBaseFS is global state;
+	// setting it here keeps it consistent with the embedded-runtime test helpers
+	// that also set it, avoiding cross-test interference within a package.
+	goose.SetBaseFS(migrations.FS)
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("goose dialect: %v", err)
 	}
-	if err := goose.Up(sqldb, migrationsDir(t)); err != nil {
+	if err := goose.Up(sqldb, "."); err != nil {
 		t.Fatalf("goose up: %v", err)
 	}
 
@@ -62,13 +67,4 @@ func SetupPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
-}
-
-func migrationsDir(t *testing.T) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate testdb source file")
-	}
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
 }
