@@ -193,13 +193,32 @@ refused), `TestBackupRequiresStopped`, `TestIncompleteBackupNotOffered` (no PG).
 
 ---
 
-## M7 — Packaging / blue-green / upgrade  (hardening)
-**Scope (Steps 9, 10)** — junction-based install swap with retry-on-sharing-
-violation; `internal/upgrade` with the four-phase unexported API; dump/restore
-upgrades (no `pg_upgrade`).
+## M7 — Packaging / blue-green / upgrade  (hardening)  ✅ core done
+**Scope (Steps 9, 10)** — blue-green swap + the four-phase upgrade API.
 
-**AC / T** — `TestJunctionSwapRollback`, `TestUpgradeVerifyBeforeCommit`,
-`TestSwapRetriesOnSharingViolation` (Windows).
+**Swap decision (junction → rename-with-retry):** `dbruntime.SwapInPlace(live,
+staged, backup)` renames `live→backup` then `staged→live`, rolling back on
+failure; the fixed `live` DataPath is unchanged (only the directory there is
+replaced). Directory junctions were the original proposal, but a fixed live path
++ rename-with-retry gives the same rollback and AV/indexer tolerance without
+reparse-point APIs or privilege. `renameWithRetry` retries only transient Windows
+sharing/access-denied errors (OS-tagged `isSharingViolation`), fails fast on real
+errors. The cluster is stopped during commit.
+
+**`internal/upgrade`** — the phases (`prepare→perform→verify→commit`) are
+unexported; only `Run(Options)` is exported, so no package can call a phase out
+of order (compiler-enforced). `verify` is strictly before `commit`: a failed
+verify aborts and never switches the cluster. Developer Edition never uses
+`pg_upgrade` — `Perform` restores into a NEW dir (M6), `Commit` is `SwapInPlace`.
+
+**Deferred to M8/orchestration:** the real op wiring (backup/restore/verify/swap)
+behind `Options` and the `actiongate cluster upgrade` CLI command — needs a
+running system + audit `verify()`. M7 provides the mechanism + ordering engine.
+
+**AC / T** — `TestSwapRollbackOnFailure` (rollback restores live),
+`TestSwapRetriesOnSharingViolation` (Windows) + `TestSwapDoesNotRetryRealErrors`,
+`TestUpgradeVerifyBeforeCommit` (order + no-commit-on-verify-fail) +
+`TestRunRequiresAllPhases`. All run without Postgres.
 
 ---
 
