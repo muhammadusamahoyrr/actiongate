@@ -8,12 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
-	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -21,22 +18,20 @@ import (
 type Config struct {
 	// DataPath is the PERSISTENT cluster directory (survives restarts).
 	DataPath string
-	// RuntimePath is the EPHEMERAL extracted-binaries directory. The embedded
-	// library erases and recreates it on every Start, so it must not equal
-	// DataPath. If empty, the library derives one.
+	// RuntimePath is only used while priming (extracting) the Postgres binaries;
+	// the owned lifecycle no longer keeps a per-start runtime dir. If empty, a
+	// temp dir is used during priming.
 	RuntimePath string
-	// BinariesPath points at pre-vendored Postgres binaries. When set and
-	// BinariesPath/bin exists, nothing is downloaded (offline install). When
-	// empty, binaries are fetched once and cached.
+	// BinariesPath is where the Postgres binaries live. If empty, a per-user
+	// cache location is used. When BinariesPath/bin/pg_ctl is absent the binaries
+	// are extracted there once (offline if the archive is already cached).
 	BinariesPath string
 	// Port is the TCP port to listen on. When 0, the runtime probes a free port
-	// at New() and exposes it via Port(); the caller persists it (e.g. to
-	// dev.json.db_port).
+	// at New() and exposes it via Port(); the caller persists it.
 	Port uint32
-	// Database, Username, Password are the cluster's initial credentials. The
-	// password is stored SCRAM-hashed at init (PG18 default) and must stay stable
-	// across restarts of a persistent DataPath. Use GeneratePassword for a strong
-	// one and persist it alongside DataPath.
+	// Database, Username, Password are the cluster's credentials. The password is
+	// stored SCRAM-hashed at initdb and must stay stable across restarts of a
+	// persistent DataPath. Use GeneratePassword for a strong one.
 	Database string
 	Username string
 	Password string
@@ -45,8 +40,7 @@ type Config struct {
 	// StartTimeout bounds a cold start (initdb + first boot). Defaults to 90s,
 	// floored at 30s, to tolerate corporate AV scanning each extracted file.
 	StartTimeout time.Duration
-	// Logger receives the embedded Postgres process output. Defaults to
-	// io.Discard.
+	// Logger receives Postgres/tooling process output. Defaults to io.Discard.
 	Logger io.Writer
 	// ExtraParams are extra postgresql GUCs passed as `-c key=value` at start.
 	// Primarily an override/testing seam (e.g. forcing fsync=off to exercise the
@@ -54,13 +48,13 @@ type Config struct {
 	ExtraParams map[string]string
 }
 
-// Embedded is a DatabaseRuntime backed by an embedded PostgreSQL cluster.
+// Embedded is a DatabaseRuntime backed by an embedded PostgreSQL cluster whose
+// initdb/pg_ctl lifecycle the runtime owns directly.
 type Embedded struct {
 	cfg Config
 	dsn string
 
 	mu      sync.Mutex
-	pg      *embeddedpostgres.EmbeddedPostgres
 	running bool
 }
 
@@ -94,6 +88,9 @@ func New(cfg Config) (*Embedded, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = io.Discard
 	}
+	if cfg.BinariesPath == "" {
+		cfg.BinariesPath = defaultBinariesPath()
+	}
 
 	dsn := fmt.Sprintf("postgres://%s:%s@127.0.0.1:%d/%s?sslmode=disable",
 		cfg.Username, cfg.Password, cfg.Port, cfg.Database)
@@ -122,75 +119,59 @@ func probeFreePort() (uint32, error) {
 	return uint32(l.Addr().(*net.TCPAddr).Port), nil
 }
 
-func (e *Embedded) build() *embeddedpostgres.EmbeddedPostgres {
-	// listen_addresses=localhost binds both loopback addresses (127.0.0.1 + ::1),
-	// never an external interface, and avoids the v4/v6 resolution mismatch the
-	// library's own host=localhost connections would otherwise hit.
-	params := map[string]string{"listen_addresses": "localhost"}
-	for k, v := range e.cfg.ExtraParams {
-		params[k] = v
-	}
-
-	pc := embeddedpostgres.DefaultConfig().
-		Version(embeddedpostgres.V18).
-		Port(e.cfg.Port).
-		Database(e.cfg.Database).
-		Username(e.cfg.Username).
-		Password(e.cfg.Password).
-		DataPath(e.cfg.DataPath).
-		StartTimeout(e.cfg.StartTimeout).
-		StartParameters(params).
-		Logger(e.cfg.Logger)
-	if e.cfg.RuntimePath != "" {
-		pc = pc.RuntimePath(e.cfg.RuntimePath)
-	}
-	if e.cfg.BinariesPath != "" {
-		pc = pc.BinariesPath(e.cfg.BinariesPath)
-	}
-	return embeddedpostgres.NewDatabase(pc)
-}
-
-// DSN returns the connection string for the cluster.
+// DSN returns the connection string for the cluster's application database.
 func (e *Embedded) DSN() string { return e.dsn }
 
 // Port returns the TCP port the cluster listens on (resolved if it was probed).
 func (e *Embedded) Port() uint32 { return e.cfg.Port }
 
-// Start brings the cluster up, hardens local auth to scram-sha-256, and refuses
-// to run if durability GUCs are unsafe. A fresh cluster is initialized only when
-// DataPath holds none; an existing DataPath is reused (data persists).
+// Start ensures binaries, initializes a fresh cluster (with builtin C.UTF-8
+// locale and scram auth) only when DataPath holds none, boots via pg_ctl,
+// hardens local auth, and refuses to run if durability GUCs are unsafe. An
+// existing cluster that will not boot yields a *ClusterError and is never
+// reinitialized.
 func (e *Embedded) Start(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.running {
 		return nil
 	}
-	// Classify before starting: if a cluster already exists and fails to boot
-	// (e.g. WAL recovery could not complete), we must surface a restore-directed
-	// error and never let anything reinitialize over the audit history.
+
+	if err := ensureBinaries(e.cfg.BinariesPath, e.cfg.StartTimeout); err != nil {
+		return err
+	}
+
 	state := ClassifyCluster(e.cfg.DataPath)
-	pg := e.build()
-	if err := runCtx(ctx, pg.Start); err != nil {
+	if state == ClusterAbsent {
+		if err := e.runInitdb(ctx); err != nil {
+			return fmt.Errorf("dbruntime: initdb: %w", err)
+		}
+		_ = hardenDataDirPerms(e.cfg.DataPath) // before first boot; best-effort
+		if err := writePgHBA(e.cfg.DataPath); err != nil {
+			return err
+		}
+	}
+
+	if err := e.pgctlStart(ctx); err != nil {
 		if state == ClusterPresent {
 			return &ClusterError{Path: e.cfg.DataPath, Err: err}
 		}
-		return fmt.Errorf("dbruntime: start embedded postgres: %w", err)
+		return fmt.Errorf("dbruntime: start postgres: %w", err)
 	}
-	e.pg = pg
 	e.running = true
 
-	// Defense in depth on the on-disk cluster (initdb already restricts, but the
-	// service may run as a broader account). Best-effort.
-	_ = hardenDataDirPerms(e.cfg.DataPath)
+	if state == ClusterAbsent {
+		if err := e.createAppDatabase(ctx); err != nil {
+			e.stopLocked(ctx)
+			return err
+		}
+	}
 
-	// Upgrade the library's default `password` auth to scram-sha-256 (no trust
-	// anywhere) and reload.
+	// Safety net for existing clusters whose pg_hba may predate hardening.
 	if err := e.hardenAuth(ctx); err != nil {
 		e.stopLocked(ctx)
 		return err
 	}
-
-	// The "survives a power-cord pull" guarantee is unenforceable without these.
 	if err := e.checkDurability(ctx); err != nil {
 		e.stopLocked(ctx)
 		return err
@@ -198,23 +179,26 @@ func (e *Embedded) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop shuts the cluster down. In M2 both modes perform the library's graceful
-// stop; M4 differentiates fast vs immediate via pg_ctl.
-func (e *Embedded) Stop(ctx context.Context, _ ShutdownMode) error {
+// Stop shuts the cluster down: ShutdownFast is a clean checkpoint (warm next
+// start); ShutdownImmediate skips the checkpoint (WAL recovery next start).
+func (e *Embedded) Stop(ctx context.Context, mode ShutdownMode) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.stopLocked(ctx)
+	return e.stopLockedMode(ctx, mode)
 }
 
-// stopLocked stops the cluster; the caller must hold e.mu.
-func (e *Embedded) stopLocked(ctx context.Context) error {
-	if !e.running || e.pg == nil {
+// stopLocked stops the cluster with a fast shutdown; the caller must hold e.mu.
+func (e *Embedded) stopLocked(ctx context.Context) {
+	_ = e.stopLockedMode(ctx, ShutdownFast)
+}
+
+func (e *Embedded) stopLockedMode(ctx context.Context, mode ShutdownMode) error {
+	if !e.running {
 		return nil
 	}
-	if err := runCtx(ctx, e.pg.Stop); err != nil {
-		return fmt.Errorf("dbruntime: stop embedded postgres: %w", err)
+	if err := e.pgctlStop(ctx, mode); err != nil {
+		return fmt.Errorf("dbruntime: stop postgres: %w", err)
 	}
-	e.pg = nil
 	e.running = false
 	return nil
 }
@@ -243,43 +227,6 @@ func (e *Embedded) Health(ctx context.Context) (HealthReport, error) {
 	return rep, nil
 }
 
-// pgHBAContents is the hardened access-control policy: authenticated
-// (scram-sha-256) loopback only, no trust.
-const pgHBAContents = `# Managed by ActionGate (dbruntime). Authenticated loopback only — no trust.
-local   all   all                  scram-sha-256
-host    all   all   127.0.0.1/32   scram-sha-256
-host    all   all   ::1/128        scram-sha-256
-`
-
-// hardenAuth overwrites pg_hba.conf with scram-sha-256-only rules and reloads.
-// The role password is already SCRAM-hashed at init (PG18 default), so scram
-// authentication succeeds with the same password.
-func (e *Embedded) hardenAuth(ctx context.Context) error {
-	hba := filepath.Join(e.cfg.DataPath, "pg_hba.conf")
-	existing, err := os.ReadFile(hba) //nolint:gosec // path derived from our own DataPath
-	if err != nil {
-		return fmt.Errorf("dbruntime: read pg_hba.conf: %w", err)
-	}
-	if string(existing) == pgHBAContents {
-		return nil // already hardened (persistent DataPath, later start)
-	}
-	if err := os.WriteFile(hba, []byte(pgHBAContents), 0o600); err != nil {
-		return fmt.Errorf("dbruntime: write pg_hba.conf: %w", err)
-	}
-
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	conn, err := pgx.Connect(cctx, e.dsn) // pre-reload auth is still `password`
-	if err != nil {
-		return fmt.Errorf("dbruntime: connect to reload pg_hba: %w", err)
-	}
-	defer func() { _ = conn.Close(cctx) }()
-	if _, err := conn.Exec(cctx, "SELECT pg_reload_conf()"); err != nil {
-		return fmt.Errorf("dbruntime: reload pg_hba: %w", err)
-	}
-	return nil
-}
-
 // checkDurability refuses to run if a GUC that the tamper-evident audit log
 // depends on for crash survival has been weakened.
 func (e *Embedded) checkDurability(ctx context.Context) error {
@@ -301,18 +248,4 @@ func (e *Embedded) checkDurability(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// runCtx runs a blocking library call while honoring ctx cancellation. If ctx is
-// cancelled the call is abandoned (it finishes in the background); M4's
-// self-owned lifecycle removes this compromise.
-func runCtx(ctx context.Context, fn func() error) error {
-	done := make(chan error, 1)
-	go func() { done <- fn() }()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-done:
-		return err
-	}
 }

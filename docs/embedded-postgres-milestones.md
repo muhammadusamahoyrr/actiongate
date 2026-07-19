@@ -107,18 +107,38 @@ tenant/epoch-0 is an M8 integration test)
 
 ---
 
-## M4 — Lifecycle ownership + graceful shutdown  (hardening)
-Replace library Start/Stop with our own `pg_ctl` wrapper.
+## M4 — Lifecycle ownership + graceful shutdown  (hardening)  ✅ done
+Replace library Start/Stop with our own `initdb`/`pg_ctl` wrapper.
 
-**Scope (Step 5, 6)** — own `initdb`/`pg_ctl` over the library's extracted
-binaries. Adds `--locale-provider=builtin --builtin-locale=C.UTF-8` (moved from
-M2 — needs owned initdb). Graceful shutdown: drain → stop approvals → let sealer
-finish → flush logs → `pg_ctl stop -m fast`; `-m immediate` only at bounded
-deadline, logged loudly.
+**Scope (Step 5, 6)** — own `initdb`/`pg_ctl` over binaries the library extracts
+once (a throwaway "prime" into a shared `BinariesPath`; offline after cache).
+`initdb` now applies `-A scram-sha-256 --encoding=UTF8 --locale-provider=builtin
+--builtin-locale=C.UTF-8`; we create the app DB and write strict `pg_hba` before
+first boot. `pg_ctl start -w -l <log>` boots; `pg_ctl stop -w -m fast|immediate`
+stops (immediate logged loudly). The step-6 drain/sealer sequencing is
+orchestration and lands with M5/M8; the DB-process half is here.
 
-**AC / T** — `TestBuiltinLocale` (provider/collation reflect builtin C.UTF-8),
-`TestFastStopWarmRestart` (clean stop → next start needs no crash recovery, < 5s),
-`TestImmediateStopLogsAndRecovers`.
+**Windows gotchas hit (recorded so they aren't relearned):**
+1. `pg_ctl start` with a pipe (`MultiWriter`) as stdio **deadlocks** — the
+   long-lived `postgres` child inherits the pipe, never EOFs, `cmd.Run` hangs
+   forever. Fix: `-l <logfile>` + null stdio for start; pipes are fine for
+   short-lived `initdb`/`stop`.
+2. `os.Stat("bin/pg_ctl")` never matches on Windows (file is `pg_ctl.exe`; unlike
+   `exec`, `Stat` doesn't append `.exe`) → primed on every start and a second
+   concurrent runtime hit "Access is denied" renaming a locked `postgres.exe`.
+   Fix: OS-aware `exe()` suffix.
+3. `datcollate` holds the libc `lc_*` (system cp1252), not the provider locale —
+   assert `datlocprovider='b'` and `datlocale='C.UTF-8'`.
+
+**Still deferred:** Windows `icacls` ACL lockdown (initdb already restricts pgdata
+to the owner; SID-based ACLs are low-value vs. risk — revisit only if the service
+account ever differs from the installer). The step-6 app-level drain (approvals /
+sealer) belongs with M5/M8.
+
+**AC / T** — `TestBuiltinLocale` (`datlocprovider='b'`, `datlocale='C.UTF-8'`),
+`TestFastStopWarmRestart` (warm restart faster than cold, data intact — the <5s
+figure is a reference-machine target, not a portable test bound),
+`TestImmediateStopLogsAndRecovers` (loud log + WAL recovery restores data).
 
 ---
 
