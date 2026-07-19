@@ -6,11 +6,10 @@ package testdb
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
+	"github.com/muhammadusamahoyrr/actiongate/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -52,7 +51,8 @@ func SetupPool(t *testing.T) *pgxpool.Pool {
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("goose dialect: %v", err)
 	}
-	if err := goose.Up(sqldb, migrationsDir(t)); err != nil {
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.Up(sqldb, "."); err != nil {
 		t.Fatalf("goose up: %v", err)
 	}
 
@@ -62,13 +62,4 @@ func SetupPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
-}
-
-func migrationsDir(t *testing.T) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate testdb source file")
-	}
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
 }
