@@ -35,20 +35,24 @@ Three properties make it different:
   sealed with a signing key the application doesn't hold. `verify` re-derives
   every hash and signature from raw data — you check the math, not our word.
 
+Install is zero-dependency: `actiongate up` runs its own embedded PostgreSQL —
+no Docker, no database to set up, ready in under a minute.
+
 ---
 
 ## Quickstart (60 seconds)
 
-**Prerequisites:** Docker (it manages Postgres for you — or point
-`actiongate up -db-url` at any PostgreSQL 16+).
+**Prerequisites: none.** `actiongate up` runs its own embedded PostgreSQL —
+no Docker, no database setup, no admin knowledge of Postgres required. (Prefer
+your own database? Point `actiongate up -db-url` at any external PostgreSQL 18+.)
 
 Get the binaries from the
 [latest release](https://github.com/muhammadusamahoyrr/actiongate/releases/latest)
 or build from source (Go 1.25+): `go build -o bin/ ./cmd/...`
 
 ```bash
-# 1. Start everything — Postgres, migrations, a tenant with the claude-code
-#    starter policy, gateway enrollment, control plane. Leave it running.
+# 1. Start everything — embedded Postgres, migrations, a tenant with the
+#    claude-code starter policy, gateway enrollment, control plane. Leave it running.
 actiongate up
 
 # 2. In the project you want governed (new terminal):
@@ -76,10 +80,11 @@ actiongate service install    # from an elevated terminal, once
 ```
 
 The control plane then starts automatically after every reboot (delayed
-start), restarts itself on failure, waits patiently for Docker/Postgres to
-come up, and logs to `%APPDATA%\actiongate\service.log`. Check it any time
-with `actiongate service status` (no elevation needed). `actiongate
-service uninstall` removes it. Linux/macOS: run `controlplane` under
+start), restarts itself on failure, brings up its own embedded PostgreSQL, and
+logs to `%APPDATA%\actiongate\service.log`. Check it any time with `actiongate
+service status` (no elevation needed), or run `actiongate doctor` for a full
+health report (database, schema, tenant, signing keys, sealer, control plane).
+`actiongate service uninstall` removes it. Linux/macOS: run `controlplane` under
 systemd/launchd with the `AG_*` environment for now.
 
 ### Starter policy packs
@@ -114,9 +119,10 @@ touched.
 ## Manual setup (15 minutes)
 
 The step-by-step path — what `actiongate up` automates, useful for
-understanding the pieces or wiring a non-local deployment.
+understanding the pieces or wiring a non-local deployment. This path uses an
+**external** PostgreSQL; `actiongate up` instead runs an embedded one for you.
 
-**Prerequisites:** Go 1.25+, Docker (or any PostgreSQL 16+), and the
+**Prerequisites:** Go 1.25+, Docker (or any PostgreSQL 18+), and the
 [goose](https://github.com/pressly/goose) migration tool
 (`go install github.com/pressly/goose/v3/cmd/goose@latest`).
 
@@ -142,7 +148,7 @@ go build -o bin/ ./cmd/...
 ```bash
 docker run -d --name actiongate-db \
   -e POSTGRES_USER=ag -e POSTGRES_PASSWORD=ag -e POSTGRES_DB=actiongate \
-  -p 5432:5432 postgres:16-alpine
+  -p 5432:5432 postgres:18-alpine
 
 goose -dir migrations postgres "postgres://ag:ag@localhost:5432/actiongate?sslmode=disable" up
 ```
