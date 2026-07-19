@@ -1,5 +1,5 @@
 // Package testdb provides the shared integration-test database: a real
-// postgres:16-alpine container with the repo's Goose migrations applied.
+// postgres:18-alpine container with the repo's Goose migrations applied.
 // Only ever imported from _test files.
 package testdb
 
@@ -11,20 +11,21 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/muhammadusamahoyrr/actiongate/migrations"
 	"github.com/pressly/goose/v3"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/muhammadusamahoyrr/actiongate/migrations"
 )
 
-// SetupPool starts a Postgres 16 container, applies all Goose migrations,
+// SetupPool starts a Postgres 18 container, applies all Goose migrations,
 // and returns a pgxpool. Cleanup is registered on t.
 func SetupPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
 
-	pgc, err := tcpostgres.Run(ctx, "postgres:16-alpine",
+	pgc, err := tcpostgres.Run(ctx, "postgres:18-alpine",
 		tcpostgres.WithDatabase("actiongate"),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
@@ -48,10 +49,14 @@ func SetupPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("open for migrations: %v", err)
 	}
 	defer func() { _ = sqldb.Close() }()
+	// Use the embedded migrations FS (like `actiongate up`), so tests never
+	// depend on the process working directory. goose.SetBaseFS is global state;
+	// setting it here keeps it consistent with the embedded-runtime test helpers
+	// that also set it, avoiding cross-test interference within a package.
+	goose.SetBaseFS(migrations.FS)
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("goose dialect: %v", err)
 	}
-	goose.SetBaseFS(migrations.FS)
 	if err := goose.Up(sqldb, "."); err != nil {
 		t.Fatalf("goose up: %v", err)
 	}

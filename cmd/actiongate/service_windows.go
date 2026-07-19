@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"github.com/muhammadusamahoyrr/actiongate/internal/dbruntime"
 )
 
 const serviceName = "actiongate"
@@ -313,6 +315,14 @@ func serviceLogger(cfgPath string, debug bool) (*slog.Logger, func(), error) {
 // arrives whenever the user logs in), migrate, ensure the tenant, serve;
 // on any failure, log and start over. Nothing here ever gives up.
 func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger) {
+	var rt *dbruntime.Embedded
+	defer func() {
+		if rt != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = rt.Stop(stopCtx, dbruntime.ShutdownFast)
+		}
+	}()
 	for ctx.Err() == nil {
 		cfg, err := loadDevConfigAt(cfgPath)
 		if err != nil {
@@ -320,12 +330,19 @@ func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger) {
 			sleepCtx(ctx, 30*time.Second)
 			continue
 		}
-		if err := ensurePostgres(ctx, cfg.DatabaseURL); err != nil {
-			if ctx.Err() == nil {
-				log.Warn("database not ready, waiting", "error", err)
-				sleepCtx(ctx, 10*time.Second)
+		if rt == nil {
+			// startManagedDB brings up the embedded cluster (or reuses a running
+			// one, returning nil). External-DB users are unsupported under the
+			// service; the default managed path is embedded.
+			r, err := startManagedDB(ctx, cfg, cfgPath)
+			if err != nil {
+				if ctx.Err() == nil {
+					log.Warn("database not ready, waiting", "error", err)
+					sleepCtx(ctx, 10*time.Second)
+				}
+				continue
 			}
-			continue
+			rt = r
 		}
 		if err := migrate(ctx, cfg.DatabaseURL); err != nil {
 			log.Error("migrate failed", "error", err)

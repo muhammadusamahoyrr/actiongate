@@ -148,6 +148,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Pool: pool, Orchestrator: orch, Approvals: approvals, Coordinator: coordinator,
 		GrantKeyID: grantSigner.KeyID(), GrantPublicKey: grantPub,
 		SlackSigningSecret: cfg.SlackSigningSecret,
+		EpochKeyIDs:        []string{epochSigner.KeyID()},
 	}
 	httpServer := &http.Server{
 		Addr:              listen,

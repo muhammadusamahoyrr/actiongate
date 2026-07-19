@@ -16,7 +16,11 @@ import (
 // It lives next to gateway.json in the user config dir, mode 0600 — these
 // are real secrets for the local instance, even in dev.
 type devConfig struct {
-	DatabaseURL  string `json:"database_url"`
+	DatabaseURL string `json:"database_url"`
+	// DBPort and DBPassword persist the managed embedded PostgreSQL identity so
+	// every start reuses the same port and credentials (see internal/dbruntime).
+	DBPort       int    `json:"db_port,omitempty"`
+	DBPassword   string `json:"db_password,omitempty"`
 	Listen       string `json:"listen"`
 	ServerURL    string `json:"server_url"`
 	TokenSecret  string `json:"token_secret"`
