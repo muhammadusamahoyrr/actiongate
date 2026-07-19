@@ -61,39 +61,69 @@ func (e *Embedded) adminDSN() string {
 
 var primeMu sync.Mutex
 
+// binReady reports whether a complete binary set is present.
+func binReady(binPath string) bool {
+	_, err := os.Stat(filepath.Join(binPath, "bin", exe("pg_ctl")))
+	return err == nil
+}
+
 // ensureBinaries makes sure Postgres binaries exist at binPath/bin, extracting
 // them once via a throwaway embedded-postgres start if absent. This reuses the
 // library's proven per-platform binary sourcing while the runtime owns the real
 // cluster lifecycle. Offline once the archive is cached.
+//
+// A shared BinariesPath is common (all clusters on a machine reuse it), and
+// `go test -p N` runs packages as separate processes, so extraction is
+// serialized with BOTH an in-process mutex and a cross-process file lock, and
+// published by an atomic rename so binPath is only ever complete-or-absent.
 func ensureBinaries(binPath string, startTimeout time.Duration) error {
 	primeMu.Lock()
 	defer primeMu.Unlock()
 
-	if _, err := os.Stat(filepath.Join(binPath, "bin", exe("pg_ctl"))); err == nil {
+	if binReady(binPath) {
 		return nil
 	}
-	if err := os.MkdirAll(binPath, 0o750); err != nil {
-		return fmt.Errorf("dbruntime: create binaries dir: %w", err)
+	if err := os.MkdirAll(filepath.Dir(binPath), 0o750); err != nil {
+		return fmt.Errorf("dbruntime: create binaries parent: %w", err)
 	}
-	tmp, err := os.MkdirTemp("", "ag-pgprime-*")
+	if startTimeout < 30*time.Second {
+		startTimeout = 90 * time.Second
+	}
+
+	release, err := acquireFileLock(binPath+".lock", 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if binReady(binPath) {
+		return nil // another process extracted while we waited
+	}
+
+	// Extract into a private temp dir next to binPath (same volume → atomic
+	// rename), then publish. A crash mid-extract leaves only the temp.
+	work, err := os.MkdirTemp(filepath.Dir(binPath), ".pgbin-work-")
+	if err != nil {
+		return fmt.Errorf("dbruntime: prime work dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(work) }()
+	extractDir := filepath.Join(work, "root")
+
+	dataTmp, err := os.MkdirTemp("", "ag-pgprime-")
 	if err != nil {
 		return fmt.Errorf("dbruntime: prime temp dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(tmp) }()
+	defer func() { _ = os.RemoveAll(dataTmp) }()
 
 	port, err := probeFreePort()
 	if err != nil {
 		return err
 	}
-	if startTimeout < 30*time.Second {
-		startTimeout = 90 * time.Second
-	}
 	pg := embeddedpostgres.NewDatabase(embeddedpostgres.DefaultConfig().
 		Version(embeddedpostgres.V18).
 		Port(port).
-		BinariesPath(binPath).
-		RuntimePath(filepath.Join(tmp, "rt")).
-		DataPath(filepath.Join(tmp, "data")).
+		BinariesPath(extractDir).
+		RuntimePath(filepath.Join(dataTmp, "rt")).
+		DataPath(filepath.Join(dataTmp, "data")).
 		Username("prime").
 		Password("prime").
 		StartTimeout(startTimeout).
@@ -104,7 +134,39 @@ func ensureBinaries(binPath string, startTimeout time.Duration) error {
 	if err := pg.Stop(); err != nil {
 		return fmt.Errorf("dbruntime: prime binaries (stop): %w", err)
 	}
+
+	_ = os.RemoveAll(binPath) // clear any partial from a prior crash
+	if err := os.Rename(extractDir, binPath); err != nil {
+		if binReady(binPath) {
+			return nil
+		}
+		return fmt.Errorf("dbruntime: publish binaries: %w", err)
+	}
 	return nil
+}
+
+// acquireFileLock takes an exclusive advisory lock via an O_EXCL lock file,
+// retrying until timeout. A lock file older than the timeout is treated as stale
+// (a crashed holder) and stolen.
+func acquireFileLock(path string, timeout time.Duration) (func(), error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // our own lock path under BinariesPath
+		if err == nil {
+			return func() { _ = f.Close(); _ = os.Remove(path) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("dbruntime: acquire lock %s: %w", path, err)
+		}
+		if fi, statErr := os.Stat(path); statErr == nil && time.Since(fi.ModTime()) > timeout {
+			_ = os.Remove(path) // steal a stale lock
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("dbruntime: timed out waiting for binaries lock %s", path)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 // runInitdb initializes a fresh cluster with the builtin C.UTF-8 locale provider
