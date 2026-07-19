@@ -168,13 +168,28 @@ run and the whole chain fails closed.
 
 ---
 
-## M6 — Backup / Restore (logical) + Disaster Recovery  (V1-blocking for GA)
-**Scope (Steps 7, 11)** — `pg_dump` backup with metadata + checkpoint sidecar;
-restore into staging → `verify()` → junction-swap; refuse on mismatch, live
-untouched; incomplete backups never offered.
+## M6 — Backup / Restore (cold physical) + Disaster Recovery  (V1-blocking for GA)  ✅ core done
+**Revised from logical → cold physical:** the bundled Zonky binaries have no
+`pg_dump`/`pg_restore` (only initdb/pg_ctl/postgres), so Developer Edition backs
+up with a crash-consistent gzip-`tar` of `pgdata` taken while **stopped** (stdlib
+`archive/tar`, no extra binaries). See plan Step 7.
 
-**AC / T** — `TestBackupRestoreRoundTrip`, `TestRestoreRejectsTamperedDump`,
-`TestIncompleteBackupNotOffered`.
+**Scope (Steps 7, 11)** — `dbruntime.Backup` (tar pgdata, refuses if running),
+`Restore` (extract into a fresh DataPath; restored cluster keeps the source
+credentials), `WriteBackup` (`.partial` → final rename + metadata sidecar so
+interrupted backups are never restore candidates), `ListBackups` (only complete
+ones, newest first). The restored cluster boots via the normal `Start`
+(ClusterPresent) path.
+
+**Deferred to orchestration (M8/GA):** wrapping backup with the audit-chain
+`verify()` against a recorded checkpoint, the restore-into-staging→verify→junction-
+swap-into-live flow (junction swap is M7), and the `actiongate backup/restore`
+CLI. dbruntime provides the primitives; the audit-chain checkpoint stays out of
+dbruntime by design.
+
+**AC / T** — `TestBackupRestoreRoundTrip` (stop → backup → restore into fresh
+cluster → data present), `TestRestoreRejectsCorruptBackup` (invalid archive
+refused), `TestBackupRequiresStopped`, `TestIncompleteBackupNotOffered` (no PG).
 
 ---
 

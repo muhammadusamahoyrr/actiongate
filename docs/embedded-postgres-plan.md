@@ -194,10 +194,20 @@ running binary knows how to safely operate on it. Both are required.
 ```
 
 ## Step 7 — Backup / Restore (scope and safety made explicit)
-- **Developer Edition uses logical backups (`pg_dump`)** — portable,
-  deterministic, simple. An intentional tier choice, not a limitation.
-  Team/Enterprise editions may use physical backups (`pg_basebackup`/pgBackRest)
-  once audit histories reach the millions-of-events range where `pg_dump` restore
+- **Revised at M6 (binaries reality):** the bundled (Zonky) Postgres distribution
+  ships only `initdb`/`pg_ctl`/`postgres` — **no `pg_dump`/`pg_restore`** — so
+  Developer Edition uses a **cold physical backup**: a crash-consistent
+  gzip-`tar` of `pgdata` taken while the cluster is stopped (stdlib `archive/tar`,
+  zero extra binaries). Restore extracts into a fresh staging DataPath and the
+  cluster is booted with the *source* credentials, then verified and junction-
+  swapped (Step 9). This is a better fit for embedded than logical dumps and the
+  restore path reuses the installer's swap discipline. Logical (`pg_dump`) would
+  require vendoring client tools; online physical (`pg_basebackup`/pgBackRest) is
+  a later Team/Enterprise concern.
+- **(Original intent, superseded for embedded)** Logical backups were the plan
+  of record — portable, deterministic, simple — but assumed `pg_dump` shipped
+  with the binaries. Team/Enterprise editions may still use physical backups
+  once audit histories reach the millions-of-events range where restore
   time becomes impractical. Written down now so it isn't rediscovered as a
   surprise.
 - Every backup records: **ActionGate version, PostgreSQL version,

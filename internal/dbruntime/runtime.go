@@ -59,6 +59,16 @@ type DatabaseRuntime interface {
 	// reported through the returned HealthReport (Database.Healthy == false with
 	// a message), not as an error; err is non-nil only for unexpected failures.
 	Health(ctx context.Context) (HealthReport, error)
+	// Backup writes a crash-consistent physical backup (gzip tar of pgdata) to
+	// path. The cluster must be STOPPED so the copy is consistent (the bundled
+	// distribution has no pg_dump, so Developer Edition uses cold physical
+	// backup).
+	Backup(ctx context.Context, path string) error
+	// Restore extracts a backup produced by Backup into this runtime's data
+	// directory. It is meant for a fresh staging DataPath — never the live one —
+	// and the cluster must be stopped. The restored cluster keeps the SOURCE
+	// cluster's credentials, so configure this runtime with the source password.
+	Restore(ctx context.Context, path string) error
 	// DSN is the connection string callers use to reach the cluster.
 	DSN() string
 }
