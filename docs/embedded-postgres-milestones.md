@@ -82,19 +82,28 @@ it belongs with lifecycle ownership.
 ## M3 — Cluster detection + migrations + init order  (V1-blocking)
 Correctly classify an existing cluster and bring schema up safely.
 
-**Scope (Steps 4)**
-- `PG_VERSION` presence check; fresh vs existing.
-- Init order: `initdb → goose → river migrate → tenant → keys → seal epoch 0`.
-- Metadata table records schema version + minimum-compatible binary version.
-- Binary-too-old → refuse with the required version named.
-- Migrations run under `pg_advisory_lock`, released via `defer` on all paths.
-- **WAL-recovery-failed ≠ no-cluster:** never fall through to `initdb`; direct to
-  restore.
+**Scope (Step 4)** — generic, audit-chain-agnostic primitives in `dbruntime`;
+the real goose/river/tenant/keys/seal are **injected** so `dbruntime` keeps no
+control-plane dependency (real wiring lands at M8):
+- `ClassifyCluster` — `PG_VERSION` presence → fresh vs existing.
+- `Initialize(dsn, binaryVersion, minBinaryVersion, InitSteps)` runs the ordered
+  bootstrap: ensure meta → (if existing) binary-compat gate → `MigrateSchema` →
+  (if fresh) `Provision` → record min binary version. `InitSteps{MigrateSchema,
+  Provision}` are the injected goose+river / tenant+keys+seal steps.
+- `actiongate_meta` records the minimum-compatible binary version (schema version
+  itself stays in goose's `goose_db_version`). Binary-too-old → refuse, naming the
+  required version, before any migration.
+- `WithMigrationLock` — `pg_advisory_lock`, released via `defer` on all paths
+  (incl. ctx cancel / panic).
+- **WAL-recovery-failed ≠ no-cluster:** `Start` on an existing cluster that won't
+  boot returns `*ClusterError` (→ `actiongate restore`); never reinitializes.
 
-**AC / T**
-- `TestFreshInitFullOrder` (river schema + tenant + epoch 0 all present).
-- `TestOldBinaryRefused`, `TestAdvisoryLockSerializesMigrations`,
-  `TestCorruptClusterFailsLoud`.
+**AC / T** (order/gate proven with injected fakes; real presence of
+tenant/epoch-0 is an M8 integration test)
+- `TestClassifyCluster`, `TestFreshInitFullOrder` (migrate→provision on fresh;
+  migrate-only on re-run), `TestOldBinaryRefused` (refused before migrating),
+  `TestAdvisoryLockSerializesMigrations` (max 1 concurrent holder),
+  `TestCorruptClusterFailsLoud` (`*ClusterError`, `PG_VERSION` intact).
 
 ---
 

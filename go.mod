@@ -17,6 +17,7 @@ require (
 	github.com/slack-go/slack v0.27.0
 	github.com/testcontainers/testcontainers-go v0.35.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.35.0
+	golang.org/x/mod v0.37.0
 	golang.org/x/sys v0.41.0
 	google.golang.org/protobuf v1.36.11
 )

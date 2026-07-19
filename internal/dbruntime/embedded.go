@@ -165,8 +165,15 @@ func (e *Embedded) Start(ctx context.Context) error {
 	if e.running {
 		return nil
 	}
+	// Classify before starting: if a cluster already exists and fails to boot
+	// (e.g. WAL recovery could not complete), we must surface a restore-directed
+	// error and never let anything reinitialize over the audit history.
+	state := ClassifyCluster(e.cfg.DataPath)
 	pg := e.build()
 	if err := runCtx(ctx, pg.Start); err != nil {
+		if state == ClusterPresent {
+			return &ClusterError{Path: e.cfg.DataPath, Err: err}
+		}
 		return fmt.Errorf("dbruntime: start embedded postgres: %w", err)
 	}
 	e.pg = pg
