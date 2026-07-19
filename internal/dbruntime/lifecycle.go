@@ -72,7 +72,7 @@ func ensureBinaries(binPath string, startTimeout time.Duration) error {
 	if _, err := os.Stat(filepath.Join(binPath, "bin", exe("pg_ctl"))); err == nil {
 		return nil
 	}
-	if err := os.MkdirAll(binPath, 0o755); err != nil {
+	if err := os.MkdirAll(binPath, 0o750); err != nil {
 		return fmt.Errorf("dbruntime: create binaries dir: %w", err)
 	}
 	tmp, err := os.MkdirTemp("", "ag-pgprime-*")

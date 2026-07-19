@@ -30,7 +30,8 @@ func startManagedDB(ctx context.Context, cfg *devConfig, cfgPath string) (*dbrun
 	dataDir := filepath.Join(filepath.Dir(cfgPath), "pgdata")
 	rt, err := dbruntime.New(dbruntime.Config{
 		DataPath: dataDir,
-		Port:     uint32(cfg.DBPort), // 0 → probe a free port
+		Port:     uint32(cfg.DBPort), //nolint:gosec // G115: a DB port is bounded 0-65535
+
 		Database: "actiongate",
 		Username: "ag",
 		Password: cfg.DBPassword,

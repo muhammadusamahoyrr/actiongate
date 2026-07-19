@@ -83,7 +83,7 @@ func TestSwapRollbackOnFailure(t *testing.T) {
 	if !dirExists(live) {
 		t.Fatal("live directory was not rolled back")
 	}
-	b, err := os.ReadFile(filepath.Join(live, "marker"))
+	b, err := os.ReadFile(filepath.Join(live, "marker")) //nolint:gosec // test-controlled path
 	if err != nil || string(b) != "orig" {
 		t.Fatalf("live content lost after rollback: %q (%v)", string(b), err)
 	}

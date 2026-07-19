@@ -20,6 +20,7 @@ func freePort(t *testing.T) uint32 {
 		t.Fatalf("reserve free port: %v", err)
 	}
 	defer func() { _ = l.Close() }()
+	//nolint:gosec // G115: a TCP port is 0-65535 and always fits uint32.
 	return uint32(l.Addr().(*net.TCPAddr).Port)
 }
 

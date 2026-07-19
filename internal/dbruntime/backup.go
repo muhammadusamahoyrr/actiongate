@@ -203,7 +203,7 @@ const metaSuffix = ".meta.json"
 // backup leaves a ".partial" that ListBackups never offers as a restore
 // candidate — "marked incomplete at write time".
 func (e *Embedded) WriteBackup(ctx context.Context, dir, name string, meta BackupMeta) (BackupInfo, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return BackupInfo{}, fmt.Errorf("dbruntime: backups dir: %w", err)
 	}
 	final := filepath.Join(dir, name)

@@ -116,6 +116,7 @@ func probeFreePort() (uint32, error) {
 		return 0, err
 	}
 	defer func() { _ = l.Close() }()
+	//nolint:gosec // G115: a TCP port is 0-65535 and always fits uint32.
 	return uint32(l.Addr().(*net.TCPAddr).Port), nil
 }
 
