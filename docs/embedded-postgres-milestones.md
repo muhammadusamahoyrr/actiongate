@@ -222,13 +222,35 @@ running system + audit `verify()`. M7 provides the mechanism + ordering engine.
 
 ---
 
-## M8 — Integration: replace Docker in `up.go` + CI parity  (V1-blocking for GA)
-**Scope (Step 1, NFR)** — `actiongate up` uses embedded runtime instead of
-`docker run postgres:16-alpine`; bump Docker/CI to PG18; CI runs the integration
-suite twice (Docker + embedded) and asserts **byte-identical `verify`**, per-OS.
+## M8 — Integration: replace Docker in `up.go` + CI parity  (V1-blocking for GA)  ✅ done
+**Scope (Step 1, NFR)** — the Docker container is retired from the default path:
+- `actiongate up` now brings up the **managed embedded cluster** via
+  `startManagedDB` (`cmd/actiongate/embedded.go`): password + probed port persist
+  in `dev.json` (`db_port`/`db_password`), `DatabaseURL` is derived from the
+  runtime's DSN, and an already-running cluster (service) is reused. `-db-url`
+  stays as the external-Postgres escape hatch. The embedded cluster is stopped on
+  a clean exit. The old Docker `ensurePostgres` is deleted.
+- The **Windows service** loop (`serveResilient`) starts the embedded cluster
+  once via `startManagedDB` and stops it on service shutdown.
+- Docker/CI bumped to **`postgres:18-alpine`** (`testdb.go`, `ci.yml`) so both
+  deployment modes are the same major (parity NFR). CI sets `AG_RUN_DOCKER_PARITY=1`.
 
-**AC / T** — `TestVerifyParityDockerVsEmbedded`, green `actiongate up` on a clean
-machine with no Docker.
+**Verified (dogfooded):** `actiongate up` ran end-to-end with **Docker off** —
+embedded postgres → migrations → tenant → control plane → gateway enroll →
+**self-test action audited end-to-end** → `actiongate is up`. (Isolated
+`APPDATA` so the real dev.json/service were untouched.)
+
+**AC / T** — `TestVerifyDeterministicAcrossClusters` (two embedded clusters seal
+the same fixture → **byte-identical root hash** + identical verify report; runs
+locally, no Docker), `TestVerifyParityDockerVsEmbedded` (same fixture on Docker
+vs embedded; opt-in `AG_RUN_DOCKER_PARITY`, runs in CI), plus the verified
+no-Docker `actiongate up`.
+
+**Note:** a hard-kill of `up` (e.g. power loss, `TerminateProcess`) can orphan
+the embedded postgres; the next `startManagedDB` pings-and-reuses it and `pg_ctl`
+handles the stale `postmaster.pid`. Graceful Ctrl+C stops it via the deferred
+`rt.Stop`. Wiring `dbruntime.Initialize`'s advisory-lock/ordered bootstrap into
+`up` (vs the existing goose+tenant sequence) is a possible follow-up.
 
 ---
 

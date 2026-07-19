@@ -35,10 +35,16 @@ jobs:
           version: latest
 
       # Testcontainers uses the runner's Docker daemon; the transition suite
-      # runs against real postgres:16-alpine, never mocks.
+      # runs against real postgres:18-alpine, never mocks. The embedded-Postgres
+      # packages (dbruntime, health) exercise the SAME PG18 as the bundled
+      # runtime, so both deployment modes are covered here.
       # -p 4 bounds simultaneous packages: each integration package runs its
       # own Postgres container.
+      # AG_RUN_DOCKER_PARITY enables the byte-identical verify parity check
+      # (docker vs embedded) — it needs the Docker daemon, present on CI.
       - name: test (race + coverage)
+        env:
+          AG_RUN_DOCKER_PARITY: "1"
         run: go test -race ./... -count=1 -p 4 -coverprofile=coverage.out
 
       - name: coverage summary

@@ -8,11 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -23,12 +20,11 @@ import (
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/admin"
 	"github.com/muhammadusamahoyrr/actiongate/internal/controlplane"
+	"github.com/muhammadusamahoyrr/actiongate/internal/dbruntime"
 	"github.com/muhammadusamahoyrr/actiongate/internal/gateway"
 	"github.com/muhammadusamahoyrr/actiongate/migrations"
 	"github.com/muhammadusamahoyrr/actiongate/policies"
 )
-
-const dbContainerName = "actiongate-db"
 
 // cmdUp is the one-command bootstrap: Postgres up, schema migrated, tenant
 // provisioned with the claude-code starter pack, local gateway enrolled, a
@@ -36,7 +32,7 @@ const dbContainerName = "actiongate-db"
 // foreground. Safe to re-run: every step is check-then-create.
 func cmdUp(args []string) int {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
-	dbURLFlag := fs.String("db-url", "", "override the Postgres URL (default: managed docker container)")
+	dbURLFlag := fs.String("db-url", "", "use an external Postgres URL instead of the managed embedded database")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -49,20 +45,35 @@ func cmdUp(args []string) int {
 		fmt.Fprintln(os.Stderr, "up:", err)
 		return 1
 	}
-	if *dbURLFlag != "" && *dbURLFlag != cfg.DatabaseURL {
-		cfg.DatabaseURL = *dbURLFlag
-		if err := saveDevConfig(cfg, cfgPath); err != nil {
-			fmt.Fprintln(os.Stderr, "up:", err)
-			return 1
-		}
-	}
 	fmt.Printf("• config: %s\n", cfgPath)
 
-	if err := ensurePostgres(ctx, cfg.DatabaseURL); err != nil {
-		fmt.Fprintln(os.Stderr, "up: postgres:", err)
-		return 1
+	// External Postgres (escape hatch) vs the managed embedded cluster (default).
+	if *dbURLFlag != "" {
+		if *dbURLFlag != cfg.DatabaseURL {
+			cfg.DatabaseURL = *dbURLFlag
+			if err := saveDevConfig(cfg, cfgPath); err != nil {
+				fmt.Fprintln(os.Stderr, "up:", err)
+				return 1
+			}
+		}
+		if err := pingOnce(ctx, cfg.DatabaseURL); err != nil {
+			fmt.Fprintln(os.Stderr, "up: postgres:", fmt.Errorf("cannot reach external database %s: %w", cfg.DatabaseURL, err))
+			return 1
+		}
+		fmt.Println("• postgres: ready (external)")
+	} else {
+		rt, err := startManagedDB(ctx, cfg, cfgPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "up: postgres:", err)
+			return 1
+		}
+		if rt != nil {
+			defer func() { _ = rt.Stop(context.Background(), dbruntime.ShutdownFast) }()
+			fmt.Println("• postgres: ready (embedded)")
+		} else {
+			fmt.Println("• postgres: ready (embedded, already running)")
+		}
 	}
-	fmt.Println("• postgres: ready")
 
 	if err := migrate(ctx, cfg.DatabaseURL); err != nil {
 		fmt.Fprintln(os.Stderr, "up: migrate:", err)
@@ -179,60 +190,6 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
-}
-
-// ensurePostgres connects, and if that fails manages the actiongate-db
-// docker container (start it if it exists, create it otherwise), then waits
-// for the database to answer.
-func ensurePostgres(ctx context.Context, dbURL string) error {
-	if pingOnce(ctx, dbURL) == nil {
-		return nil
-	}
-	u, err := url.Parse(dbURL)
-	if err != nil || !strings.HasPrefix(u.Host, "localhost") {
-		return fmt.Errorf("cannot reach %s and it is not a local database this command manages", dbURL)
-	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		return errors.New("database unreachable and docker is not installed — start Postgres yourself or install Docker Desktop")
-	}
-
-	exists := exec.CommandContext(ctx, "docker", "inspect", dbContainerName).Run() == nil
-	if exists {
-		if out, err := exec.CommandContext(ctx, "docker", "start", dbContainerName).CombinedOutput(); err != nil {
-			return fmt.Errorf("docker start %s: %v: %s", dbContainerName, err, out)
-		}
-		// Best-effort: make the container survive reboots from now on.
-		_ = exec.CommandContext(ctx, "docker", "update", "--restart", "unless-stopped", dbContainerName).Run()
-	} else {
-		pass, _ := u.User.Password()
-		args := []string{
-			"run", "-d", "--name", dbContainerName,
-			"--restart", "unless-stopped",
-			"-e", "POSTGRES_USER=" + u.User.Username(),
-			"-e", "POSTGRES_PASSWORD=" + pass,
-			"-e", "POSTGRES_DB=" + strings.TrimPrefix(u.Path, "/"),
-			"-p", "5432:5432",
-			"postgres:16-alpine",
-		}
-		// #nosec G204 -- args are built from the user's own database URL to
-		// manage their local dev container; that is this command's job.
-		if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
-			return fmt.Errorf("docker run: %v: %s", err, out)
-		}
-	}
-
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		if pingOnce(ctx, dbURL) == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
-	}
-	return fmt.Errorf("database did not become ready within 60s")
 }
 
 func pingOnce(ctx context.Context, dbURL string) error {

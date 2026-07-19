@@ -1,5 +1,5 @@
 // Package testdb provides the shared integration-test database: a real
-// postgres:16-alpine container with the repo's Goose migrations applied.
+// postgres:18-alpine container with the repo's Goose migrations applied.
 // Only ever imported from _test files.
 package testdb
 
@@ -19,13 +19,13 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// SetupPool starts a Postgres 16 container, applies all Goose migrations,
+// SetupPool starts a Postgres 18 container, applies all Goose migrations,
 // and returns a pgxpool. Cleanup is registered on t.
 func SetupPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
 
-	pgc, err := tcpostgres.Run(ctx, "postgres:16-alpine",
+	pgc, err := tcpostgres.Run(ctx, "postgres:18-alpine",
 		tcpostgres.WithDatabase("actiongate"),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
