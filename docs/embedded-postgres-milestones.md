@@ -142,13 +142,29 @@ figure is a reference-machine target, not a portable test bound),
 
 ---
 
-## M5 — HealthReport completeness + `/healthz` + `actiongate doctor`  (hardening)
-**Scope (Steps 2, 13)** — fill Schema/Tenant/Keys/Sealer components; wire
-`/healthz`; add `actiongate doctor`. (Also diagnoses today's "service RUNNING but
-control plane not answering" state.)
+## M5 — HealthReport completeness + `/healthz` + `actiongate doctor`  (hardening)  ✅ done
+**Scope (Steps 2, 13)** — new `internal/health` package composes a full
+`dbruntime.HealthReport` over a `*pgxpool.Pool` (audit-chain-aware, so it lives
+outside `dbruntime`): Database (ping), Schema (`goose_db_version`), Tenant
+(`configuration_snapshots`, RLS-correct via `app.tenant_id`), Signing keys (every
+sealed epoch's `key_id` is in the configured set), Sealer (`audit_epochs`
+progression vs `audit_events`). `actiongate doctor` renders ✔/✖ lines from it plus
+a live control-plane `/healthz` probe and exits non-zero if unhealthy.
+`handleHealthz` now returns the per-component body while keeping the HTTP status
+**database-driven** (200 live / 503 down) so existing liveness probes (`up`,
+`ag-hook`) keep their contract.
 
-**AC / T** — `TestDoctorAllHealthy`, `TestDoctorNamesFailingComponent`,
-`TestHealthzReflectsSealer`.
+**Dogfooded:** `go run ./cmd/actiongate doctor` on this machine correctly
+diagnosed the live "control plane not answering" state — root cause is **Docker
+Desktop is off**, so the `actiongate-db` container (current docker-based DB) can't
+run and the whole chain fails closed.
+
+**AC / T** — `TestCheckAllHealthy` + `TestCheckNamesFailingComponent`
+(health-package equivalents of the doctor all-healthy / named-failure ACs),
+`TestCheckKeysUnknownKey`, `TestHealthzReflectsSealer`. All four run against the
+**embedded runtime (no Docker)** — the `/healthz` test drives a minimal
+`Server{Pool,EpochKeyIDs}` via `httptest` rather than the testcontainers
+`servertest` harness, which is Docker-gated (daemon currently off).
 
 ---
 

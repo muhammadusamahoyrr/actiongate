@@ -100,6 +100,7 @@ func Setup(t *testing.T) *Stack {
 		Pool: pool, Orchestrator: orch, Approvals: approvals, Coordinator: coordinator,
 		GrantKeyID: signer.KeyID(), GrantPublicKey: grantPub,
 		SlackSigningSecret: SlackSigningSecret,
+		EpochKeyIDs:        []string{"epoch-1"},
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

@@ -26,9 +26,11 @@ import (
 	actiongatev1 "github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1"
 	"github.com/muhammadusamahoyrr/actiongate/gen/actiongate/v1/actiongatev1connect"
 	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
+	"github.com/muhammadusamahoyrr/actiongate/internal/dbruntime"
 	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
 	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
+	"github.com/muhammadusamahoyrr/actiongate/internal/health"
 	"github.com/muhammadusamahoyrr/actiongate/internal/orchestrator"
 )
 
@@ -47,7 +49,10 @@ type Server struct {
 	// SlackSigningSecret enables the /slack/interaction endpoint; empty
 	// leaves it unregistered.
 	SlackSigningSecret string
-	Now                func() time.Time
+	// Version and EpochKeyIDs enrich /healthz with the composite health report.
+	Version     string
+	EpochKeyIDs []string
+	Now         func() time.Time
 }
 
 func (s *Server) now() time.Time {
@@ -345,16 +350,49 @@ func (s *Server) ReportOutcome(ctx context.Context, req *connect.Request[actiong
 
 // handleHealthz reports liveness plus database reachability, so "the
 // process is up but Postgres is gone" is distinguishable from healthy.
+type healthzComponent struct {
+	Healthy bool   `json:"healthy"`
+	Message string `json:"message"`
+}
+
+type healthzResponse struct {
+	Status      string           `json:"status"`
+	Version     string           `json:"version,omitempty"`
+	Database    healthzComponent `json:"database"`
+	Schema      healthzComponent `json:"schema"`
+	Tenant      healthzComponent `json:"tenant"`
+	SigningKeys healthzComponent `json:"signing_keys"`
+	Sealer      healthzComponent `json:"sealer"`
+}
+
+// handleHealthz reports liveness and the composite health of every component.
+// The HTTP status is driven by the database (liveness) alone — 200 while the
+// database is reachable, 503 when it is not — so existing liveness probes keep
+// their contract; the body always carries the full component report for
+// readiness detail.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	if err := s.Pool.Ping(ctx); err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "degraded", "database": err.Error()})
-		return
+
+	rep := health.Check(ctx, s.Pool, health.Options{Version: s.Version, EpochKeyIDs: s.EpochKeyIDs})
+	comp := func(c dbruntime.ComponentHealth) healthzComponent {
+		return healthzComponent{Healthy: c.Healthy, Message: c.Message}
 	}
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	resp := healthzResponse{
+		Status:      "ok",
+		Version:     rep.Version,
+		Database:    comp(rep.Database),
+		Schema:      comp(rep.Schema),
+		Tenant:      comp(rep.Tenant),
+		SigningKeys: comp(rep.Keys),
+		Sealer:      comp(rep.Sealer),
+	}
+	if !rep.Database.Healthy {
+		resp.Status = "degraded"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleApprovalCallback is the channel-agnostic resolution endpoint: the

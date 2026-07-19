@@ -31,6 +31,8 @@ func run(args []string) int {
 		return cmdService(args[1:])
 	case "tamper-demo":
 		return cmdTamperDemo(args[1:])
+	case "doctor":
+		return cmdDoctor(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -57,6 +59,9 @@ func usage() {
   tamper-demo            prove the audit log is tamper-evident: seal events
                          on a throwaway database, edit one as a "malicious
                          DBA", watch verification name the exact event
+  doctor                 run an end-to-end health check (database, schema,
+                         tenant, signing keys, sealer, control plane) and
+                         report what is wrong; exits non-zero if unhealthy
 
 Run 'actiongate up' once, then 'actiongate protect claude-code' inside the
 project you want governed. Install the service so protection survives
