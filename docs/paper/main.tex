@@ -22,9 +22,9 @@
   captionpos=b,abovecaptionskip=3pt,commentstyle=\itshape\color{black!60},morecomment=[l]{//}}
 \renewcommand{\lstlistingname}{Listing}
 \usepackage{relsize}
-% Inline code one size step below the surrounding text, so it matches body
-% text, captions and footnotes alike (a fixed \small enlarged it in captions).
-\newcommand{\cmd}[1]{\texttt{\smaller #1}}
+% Inline code at 90% of the surrounding text (9 pt in body text, as before),
+% so it also matches captions (a fixed \small enlarged it there).
+\newcommand{\cmd}[1]{\texttt{\relscale{0.9}#1}}
 \newcommand{\fact}[1]{\textit{#1}}  % fact names, italic like other terms
 
 % Bold section headings (IEEEtran's default is regular small caps).
