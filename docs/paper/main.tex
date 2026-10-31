@@ -15,6 +15,7 @@
 \usepackage{microtype}
 \hypersetup{pdftitle={What Parsing Buys an Action Policy}, pdfauthor={Muhammad Usama, Awais Khalid}}
 \renewcommand{\arraystretch}{1.2}
+\setlength{\textfloatsep}{10pt plus 2pt minus 2pt}  % gap between top floats and text
 
 \lstset{basicstyle=\ttfamily\scriptsize,columns=flexible,keepspaces=true,showstringspaces=false,
   breaklines=true,frame=tb,framesep=2pt,xleftmargin=2pt,xrightmargin=2pt,aboveskip=4pt,belowskip=2pt,
@@ -85,7 +86,7 @@ An agent issues tool calls---\cmd{Bash}, \cmd{PowerShell}, \cmd{Read}/\cmd{Edit}
 \label{sec:design}
 ActionGate evaluates each call against ordered rules in CEL~\cite{cel}, a non-Turing-complete expression language; the first match decides, and evaluation errors fail closed. Its earlier default (v1) matched substrings of the command. We keep the engine and add one input, a map \cmd{facts} computed by a pure function of tool name and parameters, so that the fact-based policy reduces to three rules (Listing~\ref{lst:rules}).
 
-\begin{lstlisting}[float=t,caption={The v1 substring rule and the fact-based policy, both in CEL.},label=lst:rules]
+\begin{lstlisting}[float=t,aboveskip=0pt,caption={The v1 substring rule and the fact-based policy, both in CEL.},label=lst:rules]
 // v1: a predicate over the raw command text
 tool_name == "Bash" &&
   (params.command.contains("rm -rf") ||
@@ -100,6 +101,7 @@ facts.opaque         -> requires_approval
 As in authorization languages such as Cedar~\cite{cutler2024cedar}, the policy stays small while the application supplies structured attributes; an operator can write \cmd{facts.destructive \&\& environment == "prod"} without knowing shell syntax (Fig.~\ref{fig:pipeline}).
 
 \begin{figure}[t]
+\vspace*{-8.5pt}% cancel IEEEtran's figure top-skip so the figure aligns with Listing 1 at the page top
 \centering
 \begin{tikzpicture}[font=\footnotesize,>=latex,node distance=3.5mm,
   stage/.style={draw,thick,minimum height=8mm,text width=12.5mm,align=center,inner sep=1.5pt},
