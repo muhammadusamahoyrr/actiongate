@@ -161,7 +161,7 @@ SWE-chat & 640,530 calls, 417 dev. & pre-specified test \\
 Self-published & 453,036 calls, 13 dev. & pre-specified test \\
 \hline
 \end{tabular}\par\vspace{2pt}
-\parbox{0.95\columnwidth}{\scriptsize Benchmark sizes are actions; traffic sizes are governed tool calls (own traffic) or shell calls of developers with at least 50 (out of sample). B holds 33 PowerShell items, A 13, the development set 22.}
+\parbox{0.95\columnwidth}{\scriptsize Benchmark sizes are actions; traffic sizes are governed tool calls (own traffic) or shell calls of developers with at least 50 (out of sample). B holds 33 PowerShell items, A 13, the development set 22. The 40 staged Codex actions are 35 commands and 5 file writes.}
 \end{table}
 
 \textbf{Benchmarks.} Table~\ref{tab:data} lists the data. The development set was written by the first author before the analyzer. Each held-out set was written in one pass by a separate LLM agent that saw only the label definitions and category counts, not the code, the other sets or analyzer output; no item was edited afterwards. A second blind agent agreed with all 270 labels; no human has labeled them. B was evaluated once, on the final analyzer; A was scored on an earlier frozen analyzer (v2.1), whose misses later informed fixes. The probes were written in about fifteen minutes by a reviewer agent that had the analyzer's source.
