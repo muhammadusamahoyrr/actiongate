@@ -11,13 +11,17 @@
 // JSON policy file; NAME=norm:PATH evaluates that file on commands rewritten
 // by facts.Normalize (the normalize-then-regex baseline), and
 // NAME=with:tok+noreaders+novars+exempt:PATH evaluates it with facts derived
-// by an analyzer variant (see facts.Options). Labelled actions report detection and false positives;
+// by an analyzer variant (see facts.Options); NAME=front:MAP:with:tokplus:PATH
+// first replaces each shell command by an external parser's front end
+// (bench/tools/ts_front.py). Labelled actions report detection and false positives;
 // transcript actions are unlabelled and report only how often each pack would
 // interrupt the agent (friction).
 package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -52,6 +56,10 @@ type pack struct {
 	// shipped analyzer. Spec: NAME=with:tok+noreaders+novars+exempt:PATH.
 	opts    facts.Options
 	useOpts bool
+	// front: shell commands are replaced by the output of an external parser
+	// front end (bench/tools/ts_front.py), keyed by the command's SHA-256, so
+	// the facts see that parser's structure. Spec: NAME=front:MAP:with:...:PATH.
+	front map[string]string
 }
 
 // outcome is one pack's verdict on one action. An evaluation error is
@@ -160,6 +168,21 @@ func (r *report) printf(format string, a ...any) { _, _ = fmt.Fprintf(r, format,
 func (r *report) println(a ...any) { _, _ = fmt.Fprintln(r, a...) }
 
 func (p pack) evaluate(tool string, params map[string]any) outcome {
+	if p.front != nil && (tool == "Bash" || tool == "bash") {
+		if c, ok := params["command"].(string); ok {
+			sum := sha256.Sum256([]byte(c))
+			out, found := p.front[hex.EncodeToString(sum[:])]
+			if !found {
+				return outcome{decision: string(policy.Deny), rule: "front-missing", err: fmt.Errorf("no front-end output for command")}
+			}
+			cp := make(map[string]any, len(params))
+			for k, v := range params {
+				cp[k] = v
+			}
+			cp["command"] = out
+			params = cp
+		}
+	}
 	if p.normalize && (tool == "Bash" || tool == "bash") {
 		if c, ok := params["command"].(string); ok {
 			cp := make(map[string]any, len(params))
@@ -373,6 +396,18 @@ func loadPacks(engine *policy.Engine, spec string) ([]pack, error) {
 		if p, ok := strings.CutPrefix(path, "norm:"); ok {
 			path, norm = p, true
 		}
+		var front map[string]string
+		if rest, ok := strings.CutPrefix(path, "front:"); ok {
+			mapPath, p, found := strings.Cut(rest, ":with:")
+			if !found {
+				return nil, fmt.Errorf("pack %q: want front:MAP:with:OPTS:PATH", name)
+			}
+			m, err := loadFront(mapPath)
+			if err != nil {
+				return nil, fmt.Errorf("pack %q: %w", name, err)
+			}
+			front, path = m, "with:"+p
+		}
 		var opts facts.Options
 		useOpts := false
 		if rest, ok := strings.CutPrefix(path, "with:"); ok {
@@ -421,9 +456,33 @@ func loadPacks(engine *policy.Engine, spec string) ([]pack, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pack %q: %w", name, err)
 		}
-		packs = append(packs, pack{name: name, snapshot: s, normalize: norm, opts: opts, useOpts: useOpts})
+		packs = append(packs, pack{name: name, snapshot: s, normalize: norm, opts: opts, useOpts: useOpts, front: front})
 	}
 	return packs, nil
+}
+
+// loadFront reads the JSON lines written by bench/tools/ts_front.py:
+// {"h": sha256 of a command, "out": the front-ended command}.
+func loadFront(path string) (map[string]string, error) {
+	f, err := os.Open(path) //nolint:gosec // G304: reading the map the user named is the point
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	m := map[string]string{}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	for sc.Scan() {
+		var r struct {
+			H   string `json:"h"`
+			Out string `json:"out"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		m[r.H] = r.Out
+	}
+	return m, sc.Err()
 }
 
 func loadActions(path string) ([]action, error) {
