@@ -9,7 +9,7 @@
 \usepackage{listings}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.17}
-\usetikzlibrary{positioning}
+\usetikzlibrary{positioning,arrows.meta}
 \usepackage{xurl}
 \usepackage[hidelinks]{hyperref}
 \usepackage{microtype}
@@ -103,24 +103,25 @@ As in authorization languages such as Cedar~\cite{cutler2024cedar}, the policy s
 \begin{figure}[t]
 \vspace*{-8.5pt}% cancel IEEEtran's figure top-skip so the figure aligns with Listing 1 at the page top
 \centering
-\begin{tikzpicture}[font=\footnotesize,>=latex,node distance=3.5mm,
-  stage/.style={draw,thick,minimum height=8mm,text width=12.5mm,align=center,inner sep=1.5pt},
-  note/.style={font=\scriptsize,text width=15mm,align=center,text=black!70}]
+\begin{tikzpicture}[font=\footnotesize,node distance=5mm,
+  arr/.style={-{Stealth[length=2.2mm,width=1.8mm]},line width=0.7pt},
+  stage/.style={draw,thick,minimum height=8.5mm,text width=12mm,align=center,inner sep=1.5pt},
+  note/.style={font=\footnotesize,text width=15.5mm,align=center,text=black!80}]
 \node[stage] (call) {Tool\\call};
 \node[stage,fill=black!8,right=of call] (parse) {Parse \&\\resolve};
 \node[stage,right=of parse] (facts) {Facts};
 \node[stage,right=of facts] (cel) {CEL\\policy};
-\draw[->,thick] (call) -- (parse);
-\draw[->,thick] (parse) -- (facts);
-\draw[->,thick] (facts) -- (cel);
+\draw[arr] (call) -- (parse);
+\draw[arr] (parse) -- (facts);
+\draw[arr] (facts) -- (cel);
 \node[note,below=1.5mm of call] {Bash, PowerShell, file tools};
 \node[note,below=1.5mm of parse] {AST, static values, wrappers};
 \node[note,below=1.5mm of facts] {destructive, secret, opaque};
 \node[note,below=1.5mm of cel] {first match, fail closed};
-\node[font=\scriptsize,align=center,above=3mm of parse] (abl) {ablations: tokenizer, tokenizer+, tree-sitter};
-\draw[->,dashed] (abl) -- (parse);
-\node[font=\scriptsize,align=left,right=2mm of cel] (out) {allow\\approval\\deny};
-\draw[->,thick] (cel) -- (out);
+\node[align=center,text=black!80,above=4mm of parse] (abl) {ablations: tokenizer,\\tokenizer+, tree-sitter};
+\draw[arr,dashed] (abl) -- (parse);
+\node[align=left,right=4mm of cel] (out) {allow\\approval\\deny};
+\draw[arr] (cel) -- (out);
 \end{tikzpicture}
 \caption{The fact pipeline. Only the shaded stage changes between facts and its ablations; the engine and the rules stay fixed. For example, \cmd{D=build; sudo -u app \textquotesingle r\textquotesingle\textquotesingle m\textquotesingle{} -fr "\$D"} resolves to \cmd{rm -rf build}, which is \fact{destructive}, while the v1 rule \cmd{contains("rm -rf")} lets it pass.}
 \label{fig:pipeline}
