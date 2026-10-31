@@ -20,7 +20,10 @@
   breaklines=true,frame=tb,framesep=2pt,xleftmargin=2pt,xrightmargin=2pt,aboveskip=4pt,belowskip=2pt,
   captionpos=b,abovecaptionskip=3pt,commentstyle=\itshape\color{black!60},morecomment=[l]{//}}
 \renewcommand{\lstlistingname}{Listing}
-\newcommand{\cmd}[1]{\texttt{\small #1}}
+\usepackage{relsize}
+% Inline code one size step below the surrounding text, so it matches body
+% text, captions and footnotes alike (a fixed \small enlarged it in captions).
+\newcommand{\cmd}[1]{\texttt{\smaller #1}}
 \newcommand{\fact}[1]{\textsf{#1}}
 
 % Bold section headings (IEEEtran's default is regular small caps).
