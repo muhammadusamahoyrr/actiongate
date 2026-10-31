@@ -1,3 +1,18 @@
+# Layout fix: Listing 1 and Fig. 1 (2026-10-31)
+
+Tag `pre-layout-fix` marks the state before these changes. Each step was rebuilt and the page rendered at 150 dpi and inspected. No text, number, claim or reference changed.
+
+| Step | Commit | Change |
+|---|---|---|
+| 1 | `001b575`, `89c1188` | **Inline code size.** `\cmd` used a fixed `\small`, so inline code in the footnotesize caption came out larger than the caption text and made the line spacing uneven. It is now `\texttt{\relscale{0.9}…}`: 9 pt in body text (as before) and proportionally smaller in captions. The caption had no `\verb`. Listings keep `\ttfamily\scriptsize`, because `\footnotesize` Courier would make Listing 1's longest line overflow the column. |
+| 2 | `94c7db4` | **Sans-serif fact names.** `\fact` was `\textsf`. It is now `\textit`, like the paper's other terms (*destructive*, *opaque*, *inline_dynamic*). |
+| 3 | `622e9ad` | **Top alignment.** IEEEtran adds a top-skip compensation inside figure floats (`\@IEEEfiguretopskipspace`) that the listings float does not get, so Fig. 1 started about 8.6 pt below Listing 1. A matching `\vspace*{-8.5pt}` at the top of the figure aligns them. The listing float's `aboveskip` is now 0, and `\textfloatsep` is reduced from 1.55 baselineskip to 10 pt, so less blank space separates top floats from the text. |
+| 4 | `fd2a9c2` | **Fig. 1 diagram.** All diagram text is at least `\footnotesize` (labels were `\scriptsize`). Grey labels are now `black!80` (were `black!70`). Arrows are thicker, with Stealth heads and 5 mm gaps between stages. The ablation label wraps to two lines, so the diagram stays within the column. |
+
+Before and after renders of page 2: `/tmp/before.png` and `/tmp/after.png` (on Windows `%TEMP%\before.png` and `%TEMP%\after.png`).
+
+**Final build:** 9 pages, the same page count as before. 0 errors, 0 LaTeX warnings, 0 font warnings, 0 "float too large", 0 overfull boxes, and 8 underfull-box warnings (cosmetic, from justified paragraphs).
+
 # Round 5 changes (2026-10-31)
 
 All eight tasks are done. Tag `pre-round5` (commit `c18bcc2`) marks the state before round 5, and each task has its own commit after it. The frozen analyzer and packs are unchanged: hash `6809d27d…` was re-verified before the new runs, and `internal/facts` has not changed since `c18bcc2`. Of the pre-specification, only the deviations section was extended (deviation 9). The hypotheses and amendments are untouched.
