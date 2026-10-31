@@ -9,7 +9,6 @@ These items cannot be done offline, or they need human judgment or the authors' 
 ## Human judgment
 - [x] **Human labels: decided against (2026-10-31).** The paper states that all labels come from Claude agents. The kit stays released for others (deviation 10).
 - [ ] **Verify the recent references.** Go through REFS-TO-VERIFY.md by hand.
-- [ ] **Confirm Awais Khalid's contribution statement** in the acknowledgment.
 - [ ] **Confirm who "reviewers of earlier drafts"** in the acknowledgment refers to.
 
 ## External services
