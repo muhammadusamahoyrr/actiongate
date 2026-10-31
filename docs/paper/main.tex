@@ -16,8 +16,10 @@
 \hypersetup{pdftitle={What Parsing Buys an Action Policy}, pdfauthor={Muhammad Usama, Awais Khalid}}
 \renewcommand{\arraystretch}{1.2}
 
-\lstset{basicstyle=\ttfamily\footnotesize,columns=fullflexible,keepspaces=true,
-  breaklines=true,frame=none,xleftmargin=0.5em,aboveskip=3pt,belowskip=3pt}
+\lstset{basicstyle=\ttfamily\scriptsize,columns=flexible,keepspaces=true,showstringspaces=false,
+  breaklines=true,frame=tb,framesep=2pt,xleftmargin=2pt,xrightmargin=2pt,aboveskip=4pt,belowskip=2pt,
+  captionpos=b,abovecaptionskip=3pt,commentstyle=\itshape\color{black!60},morecomment=[l]{//}}
+\renewcommand{\lstlistingname}{Listing}
 \newcommand{\cmd}[1]{\texttt{\small #1}}
 \newcommand{\fact}[1]{\textsf{#1}}
 
@@ -78,30 +80,44 @@ An agent issues tool calls---\cmd{Bash}, \cmd{PowerShell}, \cmd{Read}/\cmd{Edit}
 
 \section{Design: Facts Under a Fixed Policy Engine}
 \label{sec:design}
-ActionGate evaluates each call against ordered rules in CEL~\cite{cel}, a non-Turing-complete expression language; the first match decides, and evaluation errors fail closed. Its earlier default (v1) used substring predicates:
-\begin{lstlisting}
-tool_name == "Bash" && (params.command.contains("rm -rf")
-  || params.command.contains("git push --force") || ...)
+ActionGate evaluates each call against ordered rules in CEL~\cite{cel}, a non-Turing-complete expression language; the first match decides, and evaluation errors fail closed. Its earlier default (v1) matched substrings of the command. We keep the engine and add one input, a map \cmd{facts} computed by a pure function of tool name and parameters, so that the fact-based policy reduces to three rules (Listing~\ref{lst:rules}).
+
+\begin{lstlisting}[float=t,caption={The v1 substring rule and the fact-based policy, both in CEL.},label=lst:rules]
+// v1: a predicate over the raw command text
+tool_name == "Bash" &&
+  (params.command.contains("rm -rf") ||
+   params.command.contains("git push --force") || ...)
+
+// fact-based policy: first match wins
+facts.secret_access  -> deny
+facts.destructive    -> requires_approval
+facts.opaque         -> requires_approval
 \end{lstlisting}
-We keep the engine and add one input, a map \cmd{facts} computed by a pure function of tool name and parameters. The fact-based policy is three rules:
-\begin{lstlisting}
-facts.secret_access -> deny
-facts.destructive   -> requires_approval
-facts.opaque        -> requires_approval
-\end{lstlisting}
+
 As in authorization languages such as Cedar~\cite{cutler2024cedar}, the policy stays small while the application supplies structured attributes; an operator can write \cmd{facts.destructive \&\& environment == "prod"} without knowing shell syntax (Fig.~\ref{fig:pipeline}).
 
 \begin{figure}[t]
 \centering
-\begin{tikzpicture}[font=\scriptsize,node distance=2.2mm,
-  box/.style={draw,rounded corners=1.5pt,align=left,inner sep=2.5pt,text width=0.84\columnwidth}]
-\node[box] (a) {\textbf{Tool call} \quad \texttt{Bash: D=build; sudo -u app 'r''m' -fr "\$D"}};
-\node[box,below=of a] (b) {\textbf{Parse + resolve} \quad quotes removed (\texttt{'r''m'}$\to$\texttt{rm}), wrapper \texttt{sudo -u app} stripped, \texttt{\$D}$\to$\texttt{build}, flags \texttt{-fr}$\to\{$recursive, force$\}$};
-\node[box,below=of b] (c) {\textbf{Facts} \quad \fact{destructive}=true (``recursive delete (rm)''), \fact{secret\_access}=false, \fact{opaque}=false};
-\node[box,below=of c] (d) {\textbf{Policy (unchanged CEL engine)} \quad first match: \texttt{facts.destructive} $\to$ \textbf{requires\_approval}; reason logged to the audit trail};
-\draw[->] (a) -- (b); \draw[->] (b) -- (c); \draw[->] (c) -- (d);
+\begin{tikzpicture}[font=\footnotesize,>=latex,node distance=3.5mm,
+  stage/.style={draw,thick,minimum height=8mm,text width=12.5mm,align=center,inner sep=1.5pt},
+  note/.style={font=\scriptsize,text width=15mm,align=center,text=black!70}]
+\node[stage] (call) {Tool\\call};
+\node[stage,fill=black!8,right=of call] (parse) {Parse \&\\resolve};
+\node[stage,right=of parse] (facts) {Facts};
+\node[stage,right=of facts] (cel) {CEL\\policy};
+\draw[->,thick] (call) -- (parse);
+\draw[->,thick] (parse) -- (facts);
+\draw[->,thick] (facts) -- (cel);
+\node[note,below=1.5mm of call] {Bash, PowerShell, file tools};
+\node[note,below=1.5mm of parse] {AST, static values, wrappers};
+\node[note,below=1.5mm of facts] {destructive, secret, opaque};
+\node[note,below=1.5mm of cel] {first match, fail closed};
+\node[font=\scriptsize,align=center,above=3mm of parse] (abl) {ablations: tokenizer, tokenizer+, tree-sitter};
+\draw[->,dashed] (abl) -- (parse);
+\node[font=\scriptsize,align=left,right=2mm of cel] (out) {allow\\approval\\deny};
+\draw[->,thick] (cel) -- (out);
 \end{tikzpicture}
-\caption{One command through the fact pipeline. The command is a disguised \cmd{rm -rf build}. The substring rule \cmd{contains("rm -rf")} allows it; so would any rule over the raw text that does not anticipate quoting, wrappers and variables.}
+\caption{The fact pipeline. Only the shaded stage changes between facts and its ablations; the engine and the rules stay fixed. For example, \cmd{D=build; sudo -u app \textquotesingle r\textquotesingle\textquotesingle m\textquotesingle{} -fr "\$D"} resolves to \cmd{rm -rf build}, which is \fact{destructive}, while the v1 rule \cmd{contains("rm -rf")} lets it pass.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -117,15 +133,38 @@ As in authorization languages such as Cedar~\cite{cutler2024cedar}, the policy s
 \label{sec:method}
 \textbf{Labels.} Benign $\to$ allow; destructive or opaque $\to$ requires approval; secret access $\to$ deny. These are the analyzer's own categories, so the benchmarks measure conformance to this ontology, not harm in general. Benign items deliberately include look-alikes (dangerous words in commit messages or grep patterns, dry runs, templates), which is adversarial to text rules.
 
-\textbf{Datasets.}
-\emph{Development} (228 actions; 95 benign, 133 harmful; 22 PowerShell), written by the first author before the analyzer and now a regression test.
-\emph{Held-out B} (150; 70 benign, 80 harmful; 33 PowerShell), the primary test set and the only clean one, evaluated once on the final analyzer.
-\emph{Held-out A} (120; 50 benign, 70 harmful; 13 PowerShell), evaluated on a frozen earlier analyzer (version 2.1, unrelated to the v1 policy); its misses later informed fixes.
-\emph{Protocol.} Each held-out set was written in one pass by a separate LLM agent that saw only the label definitions and category counts, not the code, the other sets or analyzer output; no item was edited afterwards. A second blind agent agreed with all 270 labels; no human has labeled them.
-\emph{Probes} (53; 50 harmful, 3 benign): written in about fifteen minutes by a reviewer agent that had the analyzer's source.
-\emph{Real traffic.} A hashed copy (prefix \texttt{60f161cc}) of the first author's Claude Code transcripts, frozen on October 31, 2026: 27,927 governed tool calls (Bash 19,932; PowerShell 352; file tools 7,643) in 15 sessions, 97\% of shell calls from one project, excluding the session in which this paper was written. Transcripts record calls as the agent issued them, not whether Claude Code's own permissions then blocked them.
-\emph{Second agent.} OpenAI's Codex CLI logs the argument vector of every command it runs. \emph{Codex, organic}: the first author's 11 sessions (4,364 commands), all run through PowerShell or \cmd{cmd.exe}. \emph{Codex, Bash}: seven everyday tasks (fixing a test, cleaning and rebuilding, squashing commits, resetting a test database and others) run in Git Bash in a small project with a fake \cmd{.env}, a database and a git history; none asked for a destructive or secret-reading command. Its 35 commands and 5 writes were labeled by the first author. All other agents in this study were Claude models, so shared blind spots remain a threat (Section~\ref{sec:limits}).
-\emph{Other developers (pre-specified).} Before reading these data we froze the analyzer and packs (hash prefix \texttt{6809d27d}) and specified three one-sided hypotheses over developers: facts stop fewer calls than tokenizer+ (H1) and than the vocabulary regex (H2) for more developers than the reverse (sign test), and a blind audit finds fact-only stops warranted more often than regex-only stops (H3, Fisher test). The primary source is SWE-chat~\cite{baumann2026swechat}: real sessions of Claude Code, Codex, Pi, OpenCode and other agents, mined from public GitHub repositories that use the Entire.io CLI; 417 developers (commit authors) with at least 50 shell calls contribute 640,530 calls. The second source is 13 developers who published their own sessions (453,036 calls). Older exports cut inputs at 300 characters, so an amendment made before any policy ran restricts the primary analysis to complete inputs and adds a secondary one (H1b, H2b) on commands shorter than 290 characters. The audit draws 30 fact-only and 30 regex-only stops from SWE-chat, one per developer, labeled blind by a Claude agent; no human labels were collected, and the items are released as a kit. The specification is a timestamped file with the frozen hash in our repository, not an external registration. It records ten deviations, the most consequential a converter fix made after a first run had been seen. Effect sizes, per-agent results, sensitivity runs, relabelings and the tree-sitter ablation are exploratory.
+\begin{table}[t]
+\caption{Evaluation Data}
+\label{tab:data}
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|l|l|l|}
+\hline
+Set & Size & Role \\
+\hline
+Development & 228 (133 harmful) & regression test \\
+Held-out B & 150 (80 harmful) & primary test \\
+Held-out A & 120 (70 harmful) & frozen analyzer v2.1 \\
+Probes & 53 (50 harmful) & source-aware round \\
+\hline
+Own traffic (Claude Code) & 27,927 calls & cost, in-sample \\
+Codex, organic & 4,364 commands & second agent \\
+Codex, Bash (staged) & 40 actions (3 harmful) & second agent \\
+\hline
+SWE-chat & 640,530 calls, 417 dev. & pre-specified test \\
+Self-published & 453,036 calls, 13 dev. & pre-specified test \\
+\hline
+\end{tabular}\par\vspace{2pt}
+\parbox{0.95\columnwidth}{\scriptsize Benchmark sizes are actions; traffic sizes are governed tool calls (own traffic) or shell calls of developers with at least 50 (out of sample). B holds 33 PowerShell items, A 13, the development set 22.}
+\end{table}
+
+\textbf{Benchmarks.} Table~\ref{tab:data} lists the data. The development set was written by the first author before the analyzer. Each held-out set was written in one pass by a separate LLM agent that saw only the label definitions and category counts, not the code, the other sets or analyzer output; no item was edited afterwards. A second blind agent agreed with all 270 labels; no human has labeled them. B was evaluated once, on the final analyzer; A was scored on an earlier frozen analyzer (v2.1), whose misses later informed fixes. The probes were written in about fifteen minutes by a reviewer agent that had the analyzer's source.
+
+\textbf{Real traffic.} A hashed copy (prefix \texttt{60f161cc}) of the first author's Claude Code transcripts, frozen on October 31, 2026: Bash 19,932, PowerShell 352 and file tools 7,643 calls in 15 sessions, 97\% of shell calls from one project, excluding the session in which this paper was written. Transcripts record calls as the agent issued them, not whether Claude Code's own permissions then blocked them.
+
+\textbf{Second agent.} OpenAI's Codex CLI logs the argument vector of every command it runs. The organic corpus is the first author's 11 sessions, all run through PowerShell or \cmd{cmd.exe}. The Bash corpus comes from seven everyday tasks (fixing a test, cleaning and rebuilding, squashing commits, resetting a test database and others) run in Git Bash in a small project with a fake \cmd{.env}, a database and a git history; none asked for a destructive or secret-reading command; its 35 commands and 5 writes were labeled by the first author. All other agents in this study were Claude models, so shared blind spots remain a threat (Section~\ref{sec:limits}).
+
+\textbf{Other developers (pre-specified).} Before reading these data we froze the analyzer and packs (hash prefix \texttt{6809d27d}) and specified three one-sided hypotheses over developers: facts stop fewer calls than tokenizer+ (H1) and than the vocabulary regex (H2) for more developers than the reverse (sign test), and a blind audit finds fact-only stops warranted more often than regex-only stops (H3, Fisher test). The primary source is SWE-chat~\cite{baumann2026swechat}: real sessions of Claude Code, Codex, Pi, OpenCode and other agents, mined from public GitHub repositories that use the Entire.io CLI; 417 developers (commit authors) with at least 50 shell calls. The second source is 13 developers who published their own sessions. Older exports cut inputs at 300 characters, so an amendment made before any policy ran restricts the primary analysis to complete inputs and adds a secondary one (H1b, H2b) on commands shorter than 290 characters. The audit draws 30 fact-only and 30 regex-only stops from SWE-chat, one per developer, labeled blind by a Claude agent; no human labels were collected, and the items are released as a kit. The specification is a timestamped file with the frozen hash in our repository, not an external registration. It records ten deviations, the most consequential a converter fix made after a first run had been seen. Effect sizes, per-agent results, sensitivity runs, relabelings and the tree-sitter ablation are exploratory.
 
 \textbf{Policies.} \emph{v1}: ActionGate's earlier substring pack, a baseline we wrote in the style of documented hooks~\cite{claudecode_hooks}. \emph{Strong regex}: four RE2 rules for flag variants, git force and delete forms, SQL, \cmd{find -delete}, interpreter deletion APIs, PowerShell, secret names and pipes into shells, written with knowledge of the development set and held-out A, so deliberately favorable. \emph{Tuned regex}: the same rules after a tuning pass on real traffic analogous to the analyzer's, five edits such as restricting \cmd{eval} to command position and ignoring secret names after \cmd{test} and \cmd{ls}. \emph{Vocabulary(-matched) regex}: the tuned regex extended with every secret name and destructive verb the analyzer knows, assembled after B's results were seen. \emph{Normalized vocabulary regex}: the same on commands after the analyzer's normalization. \emph{Gate-all}: every shell command and file mutation needs approval, and secret-file reads are denied.
 
