@@ -1,11 +1,12 @@
 # Title options
 
-The current title is "Vocabulary Catches, Structure Calms: Decomposing Action Policies for AI Coding Agents on Held-Out Benchmarks and Real Traffic". Reviewers say it overclaims in two places:
+**Decision (2026-10-31): option 2 was chosen and is now the paper's title.**
+
+The former title was "Vocabulary Catches, Structure Calms: Decomposing Action Policies for AI Coding Agents on Held-Out Benchmarks and Real Traffic". Reviewers say it overclaims in two places:
 
 - **"Vocabulary Catches"**: held-out B cannot separate the vocabulary regex (86.3%) from facts (90.0%). The benchmark shows that vocabulary accounts for most of the gain over the substring policy, not that vocabulary alone catches attacks.
 - **"Structure Calms"**: this holds against a line tokenizer. Against a regex the typical developer's difference is near zero.
 
-The title is **not** changed. Choose one of the options below or keep the current title.
 
 1. **Vocabulary First, Parsing Second: Decomposing Action Policies for AI Coding Agents on Benchmarks and Real Traffic**
    - Puts the order of contributions in the title without claiming that either one wins.

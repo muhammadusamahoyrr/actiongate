@@ -149,7 +149,7 @@ Code layout: `cmd/` has five binaries (`actiongate`, `controlplane`, `gateway`, 
 | [Architecture](docs/plan.md) | Design record and decisions |
 | [Tech stack](docs/tech-stack.md) | Technology choices and why |
 | [Verification log](VERIFICATION.md) | What was tested, milestone by milestone |
-| [Paper](docs/paper/main.pdf) | Vocabulary Catches, Structure Calms: decomposing action policies on held-out benchmarks and real traffic |
+| [Paper](docs/paper/main.pdf) | What Parsing Buys an Action Policy: detection, interruptions and their value for AI coding agents |
 | [Reproducing the evaluation](docs/research/EVALUATION.md) | The command behind every number in the paper |
 | [Claude plugin](claude-plugin/) | Slash commands for Claude Code |
 

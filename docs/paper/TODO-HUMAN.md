@@ -3,7 +3,7 @@
 These items cannot be done offline, or they need human judgment or the authors' approval. Nothing here has been faked or filled in.
 
 ## Decisions for the authors
-- [ ] **Choose the title** from TITLE-OPTIONS.md, or keep the current one.
+- [x] **Title chosen (2026-10-31):** "What Parsing Buys an Action Policy: Detection, Interruptions and Their Value for AI Coding Agents".
 - [ ] **Push** branch `research/action-bench` and tag `pre-round5`. Both are local only; nothing has been pushed.
 
 ## Human judgment
