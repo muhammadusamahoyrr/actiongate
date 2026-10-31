@@ -39,6 +39,16 @@ go run ./cmd/agbench -data bench/heldout-b.jsonl \
 
 `-calls` prints friction per developer (developers are numbered, never named), pooled and macro-averaged, and one-sided sign tests over developers; `-disagree` writes the blind audit sample. Add `-maxlen 290` for the secondary analysis that admits short commands from exports that cut long inputs.
 
+**Off-the-shelf parser ablation (exploratory, deviation 9).** `pip install tree-sitter tree-sitter-bash`, then build a front-end map over every input and add the pack `ts=front:front.jsonl:with:tokplus:$F`:
+
+```bash
+python bench/tools/ts_front.py front.jsonl bench/heldout-b.jsonl bench/adaptive.jsonl swechat_calls.jsonl ~/.claude/projects
+go run ./cmd/agbench -data bench/heldout-b.jsonl -packs facts=$F,tokplus=with:tokplus:$F,ts=front:front.jsonl:with:tokplus:$F \
+  -calls swechat_calls.jsonl -compare facts:ts,ts:tokplus,ts:vocab
+```
+
+Results: [`bench/RESULTS-ts-ablation.md`](../../bench/RESULTS-ts-ablation.md). A command missing from the map fails closed and counts as an eval error, so build the map over every file you evaluate. On SWE-chat-sized inputs, run one agbench at a time (the map and the calls together need several GB of memory).
+
 **Human labels.** `python bench/tools/make_label_kit.py bench/human/audit-items.jsonl bench/human` builds `bench/human/label-kit.html`: 50 held-out B actions and the 60 audit items, shuffled, labels hidden. Annotators follow [`LABELING.md`](LABELING.md) and export a JSON file; `python bench/tools/agreement.py bench/human/label-kit-key.jsonl bench/human/audit-key.jsonl labels-*.json` reports kappa, agreement with the benchmark labels, and the audit result.
 
 ## Commands
