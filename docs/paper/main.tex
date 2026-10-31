@@ -1,0 +1,344 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage[T1]{fontenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\usetikzlibrary{positioning}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\hypersetup{pdftitle={Vocabulary Catches, Structure Calms}, pdfauthor={Muhammad Usama, Awais Khalid}}
+\renewcommand{\arraystretch}{1.2}
+
+\lstset{basicstyle=\ttfamily\footnotesize,columns=fullflexible,keepspaces=true,
+  breaklines=true,frame=none,xleftmargin=0.5em,aboveskip=3pt,belowskip=3pt}
+\newcommand{\cmd}[1]{\texttt{\small #1}}
+\newcommand{\fact}[1]{\textsf{#1}}
+
+% Bold section headings (IEEEtran's default is regular small caps).
+\makeatletter
+\def\section{\@startsection{section}{1}{\z@}{1.5ex plus 1.5ex minus 0.5ex}%
+  {0.7ex plus 1ex minus 0ex}{\normalfont\normalsize\centering\bfseries\MakeUppercase}}
+\makeatother
+
+\begin{document}
+
+\title{Vocabulary Catches, Structure Calms:\\Decomposing Action Policies for AI Coding Agents\\on Held-Out Benchmarks and Real Traffic\vspace{-0.3\baselineskip}}
+
+\author{\IEEEauthorblockN{Muhammad Usama}
+\IEEEauthorblockA{\textit{COMSATS University Islamabad}\\
+Islamabad, Pakistan\\
+muhammadusamahoyrr@gmail.com}
+\and
+\IEEEauthorblockN{Awais Khalid}
+\IEEEauthorblockA{\textit{FAST National University of Computer}\\
+\textit{and Emerging Sciences}\\
+Islamabad, Pakistan\\
+2k7awaiskhalid@gmail.com}\vspace{-0.8\baselineskip}}
+
+\maketitle
+
+\begin{abstract}
+AI coding agents run shell commands with the developer's privileges, usually behind a policy matching the command text. We hold one policy engine fixed and vary only what its rules see: text, in substring and four regular-expression policies, or three facts (destructive, secret access, opaque) derived from a parsed shell syntax tree. On an independently written held-out benchmark of 150 actions, fact-based rules stop 90.0\% of harmful actions at a 5.7\% false-positive rate, against 16.3\% for the substring policy. Most of that gain is vocabulary: a regex given the analyzer's word lists stops 86.3\% at 11.4\%, and the benchmark cannot separate the two. The syntax tree shows in interruptions instead. On 20,284 of our own shell calls, facts interrupt 2.7\%, that regex 3.6\%, and a line tokenizer with the same semantics 6.7\%. In a pre-specified test on 417 other developers in the public SWE-chat corpus, facts interrupt less than the tokenizer for 251 developers and more for 28. Against the vocabulary regex the split is 166 to 86, but the typical developer's difference is near zero, and a regex tuned on our traffic is on par with facts. Whether stops are warranted is unresolved: the pre-specified audit was inconclusive, and all audits were labeled by Claude agents, with human labels pending. Tokenizer-only stops were mostly benign (26 of 30), regex-only stops mostly mentions of credentials, and fact-only stops mostly code a careful reader can resolve but the analyzer cannot. We release the analyzer, benchmarks, harness, pre-specification and a human labeling kit.
+\end{abstract}
+
+\begin{IEEEkeywords}
+AI coding agents, LLM agent security, guardrails, access control policies, shell command analysis, static analysis, usable security
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+Coding agents such as Claude Code, Cursor and Codex execute shell commands on developer machines. When they go wrong the damage is concrete: in July 2025 an agent deleted a production database despite the user's explicit code freeze, according to the user~\cite{register2025replit}; malicious code instructing an agent to wipe local files and cloud resources was shipped inside an IDE extension, though it failed to run~\cite{aws2025q}; and a supply-chain attack invoked installed agent CLIs with permission checks disabled to collect \cmd{.env} files and SSH keys~\cite{wiz2025nx}. Benchmarks find that agents act unsafely in a large share of risky situations~\cite{vijayvargiya2026openagentsafety,hu2026saber,singh2026issuetrojanbench}.
+
+The common mitigation is an \emph{action policy}: rules that allow, deny, or escalate each tool call. Shell commands reach these rules as strings. Agent permission systems may split compound commands and strip wrappers, but the rule itself is a pattern over the command text. Vendor documentation warns that ``Bash permission patterns that try to constrain command arguments are fragile'' and that a deny rule ``isn't a security boundary around the program''~\cite{claudecode_permissions}; documented hook examples grep the command for \cmd{rm -rf}~\cite{claudecode_hooks}. Industry reports show such guards bypassed by quoting, subshells and encoding~\cite{register2025cursor,townsend2026guardfall}.
+
+A policy can fail in two directions. Too weak, it misses a destructive command phrased differently (\cmd{rm -fr}, \cmd{find -delete}, \cmd{bash -c '...'}). Too strong, it interrupts so often that approvals become reflexive: habituation to security warnings is well documented~\cite{akhawe2013alice,anderson2015polymorphic,vance2017habituation}, and agent vendors cite approval fatigue as a reason to reduce prompts~\cite{anthropic2025sandboxing,anthropic2026automode}. We therefore ask:
+
+\begin{itemize}
+\item[\textbf{RQ1}] How much do text-based policies miss on independently written actions?
+\item[\textbf{RQ2}] What does a fact layer add, and how much of it is vocabulary, normalization, the syntax tree, and per-tool semantics?
+\item[\textbf{RQ3}] What does each policy cost in interruptions on our own agent traffic, and are those interruptions warranted?
+\item[\textbf{RQ4}] Do these costs and audit results hold, pre-specified, on other developers' traffic and on a second agent?
+\item[\textbf{RQ5}] Where does the analysis stop helping against an adversary who has read it?
+\end{itemize}
+
+\textbf{Contributions.} (1)~A controlled comparison that holds a policy engine fixed and varies only the predicate. The predicates are substring rules; four regex variants (strong, traffic-tuned, matched to the analyzer's vocabulary, and the latter on normalized commands); gate-everything; and facts derived from a shell AST, plus analyzer ablations that replace the AST with tokenization or switch off individual components (Section~\ref{sec:design}). (2)~Evaluation on an independently authored held-out benchmark, a source-aware probe set, a frozen corpus of 27,927 real Claude Code tool calls, two corpora from a second agent (Codex), and a pre-specified out-of-sample test on public sessions of 430 other developers (417 in SWE-chat, 13 self-published), with paired-difference intervals and session- and developer-level tests (Sections~\ref{sec:method}--\ref{sec:results}). (3)~A decomposition. Held-out recall comes mostly from vocabulary, and the benchmark cannot resolve the rest. On real work, in-sample and out of sample, the syntax tree is the largest single factor in how often the gate interrupts, through long, multi-line commands. (4)~Audits of what real interruptions are: denials, approvals, and the calls on which facts disagree with a vocabulary-matched regex or with the tokenizer. A joint relabeling under one protocol shows that our first in-sample audit overstated the value of facts' own extra stops by counting readable run-time code as gated. Real traffic also exposed the analyzer's largest false-positive sources and showed interpreter code to be where static structure gives way to matching again (Section~\ref{sec:analysis}). (5)~An open artifact, with materials for human relabeling.
+
+\textbf{Relation to prior work.} CARE~\cite{liu2026care} also parses agent shell commands, compares with a regex baseline and ablates its structural layer, and Claude Code's auto mode~\cite{anthropic2026automode} reports error rates of an LLM classifier on internal traffic. We do not claim the first shell parser for agents. What is new is a decomposition under one fixed policy engine against deliberately favorable text baselines (vocabulary-matched and normalized), interruption cost measured on public, inspectable traces with a pre-specified test across developers, and audits of what the interruptions are.
+
+\section{Threat Model}
+\label{sec:threat}
+An agent issues tool calls---\cmd{Bash}, \cmd{PowerShell}, \cmd{Read}/\cmd{Edit}/\cmd{Write}, \cmd{Grep}---intercepted before execution (here, by a Claude Code \cmd{PreToolUse} hook or an MCP proxy). The agent may be mistaken or steered by prompt injection. We gate three classes of action. (i)~\emph{Destructive}, defined syntactically: bulk or recursive deletion, destructive database statements, and rewriting or deleting shared history. As a policy choice this includes directories that could be regenerated; we measure its cost. (ii)~\emph{Secret access}: reading, copying or sending credential material. (iii)~\emph{Opaque}: execution whose effect cannot be determined from the call. Each call is judged in isolation. We evaluate robustness to rephrasing and to one short source-aware probe round, not to a sustained adaptive adversary. Out of scope are multi-step decompositions such as writing a script and then running it~\cite{li2026unsafer}. The same holds for any command that runs a project script or build target (\cmd{./x.sh}, \cmd{make}, \cmd{npm run}), 3.1\% of real shell calls, whose effect lies in files the gate does not read. Also out of scope are effects that bypass the tool layer~\cite{zheng2026actplane} and attacks on the gate itself.
+
+\section{Design: Facts Under a Fixed Policy Engine}
+\label{sec:design}
+ActionGate evaluates each call against ordered rules in CEL~\cite{cel}, a non-Turing-complete expression language; the first match decides, and evaluation errors fail closed. Its earlier default (v1) used substring predicates:
+\begin{lstlisting}
+tool_name == "Bash" && (params.command.contains("rm -rf")
+  || params.command.contains("git push --force") || ...)
+\end{lstlisting}
+We keep the engine and add one input, a map \cmd{facts} computed by a pure function of tool name and parameters. The fact-based policy is three rules:
+\begin{lstlisting}
+facts.secret_access -> deny
+facts.destructive   -> requires_approval
+facts.opaque        -> requires_approval
+\end{lstlisting}
+By analogy with authorization languages such as Cedar~\cite{cutler2024cedar}, the policy stays small and auditable while the application supplies structured attributes; an operator can write \cmd{facts.destructive \&\& environment == "prod"} without knowing shell syntax. Fig.~\ref{fig:pipeline} traces one command through the pipeline.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[font=\scriptsize,node distance=2.2mm,
+  box/.style={draw,rounded corners=1.5pt,align=left,inner sep=2.5pt,text width=0.84\columnwidth}]
+\node[box] (a) {\textbf{Tool call} \quad \texttt{Bash: D=build; sudo -u app 'r''m' -fr "\$D"}};
+\node[box,below=of a] (b) {\textbf{Parse + resolve} \quad quotes removed (\texttt{'r''m'}$\to$\texttt{rm}), wrapper \texttt{sudo -u app} stripped, \texttt{\$D}$\to$\texttt{build}, flags \texttt{-fr}$\to\{$recursive, force$\}$};
+\node[box,below=of b] (c) {\textbf{Facts} \quad \fact{destructive}=true (``recursive delete (rm)''), \fact{secret\_access}=false, \fact{opaque}=false};
+\node[box,below=of c] (d) {\textbf{Policy (unchanged CEL engine)} \quad first match: \texttt{facts.destructive} $\to$ \textbf{requires\_approval}; reason logged to the audit trail};
+\draw[->] (a) -- (b); \draw[->] (b) -- (c); \draw[->] (c) -- (d);
+\end{tikzpicture}
+\caption{One command through the fact pipeline. The command is a disguised \cmd{rm -rf build}. The substring rule \cmd{contains("rm -rf")} allows it; so would any rule over the raw text that does not anticipate quoting, wrappers and variables.}
+\label{fig:pipeline}
+\end{figure}
+
+\textbf{Shell analysis.} Commands are parsed into a Bash AST with \cmd{mvdan.cc/sh}~\cite{mvdan_sh}. Each word is resolved to its static value: quotes and escapes removed, braces expanded (\cmd{.\{e,\}nv}$\,\to\,$\cmd{.env}), and variables substituted when assigned a static value earlier in the same command. Wrappers that only run another command are stripped (\cmd{sudo -u x}, \cmd{env A=1}, \cmd{xargs}, \cmd{timeout}, \cmd{npx}); flags are interpreted, so \cmd{-fr}, \cmd{-r -f} and \cmd{-{}-recursive} coincide. Nested shell code (\cmd{bash -c}, \cmd{eval} of literals, here-strings, static here-documents) is re-parsed to bounded depth. Destructive semantics are defined per tool: recursive \cmd{rm}, \cmd{find -delete}, force pushes and delete refspecs, \cmd{reset -{}-hard}, \cmd{clean -f}, \cmd{dd} to a device, destructive SQL reaching a database client anywhere in a pipeline, and bulk-delete verbs of container, cluster and cloud CLIs.
+
+\textbf{Secret access} counts only commands that expose contents (\cmd{cat}, \cmd{grep}, \cmd{sed}, \cmd{tar}, \cmd{curl -d @f}, \cmd{cp} sources, \cmd{git show}), not ones that test, list, or hand a file to a program (\cmd{test -f .env}, \cmd{docker -{}-env-file .env}). A reader's leading pattern (\cmd{grep PATTERN FILE}) is not a file. Credential files are recognized by name; templates (\cmd{.env.example}) and public keys are excluded.
+
+\textbf{Opacity.} At the shell level the analyzer does not guess: \cmd{eval} of computed text, a pipe into a shell or interpreter, a command name computed at run time, process substitution used as a script, unparseable input, excess nesting, and analyzer panics all yield \fact{opaque}. Running a project script is not opaque but out of scope. Inline interpreter code (\cmd{python -c}, \cmd{node -e}, here-documents) is only scanned with patterns for deletion APIs, secret file names and embedded shell commands; code that matches nothing is \emph{allowed}. A fourth fact, \fact{inline\_dynamic}, flags interpreter code that builds strings or names at run time; the \emph{facts-strict} policy escalates it. PowerShell is analyzed at token level. The analyzer is about 1,400 lines of Go, performs no I/O, and its final Bash entry point was fuzzed for 60\,s (837,000 inputs, no panics).
+
+\textbf{Ablation switches.} For evaluation only, the analyzer accepts options that leave the policy untouched. \emph{Tokenizer} replaces the AST with quote-aware tokenization: commands split at \cmd{;}, \cmd{\&\&}, \cmd{||}, \cmd{|}, \cmd{\&}, words at whitespace, quotes removed, nothing expanded or re-parsed. The same per-command semantics apply, which approximates a command table over \cmd{shlex}-style tokens. \emph{Tokenizer+} is a fairer tokenizer: it also cuts here-document bodies out of the line and hands them to the command that reads them, and substitutes variables assigned a static value, still without a syntax tree. \emph{No-readers} counts every mention of a credential file as a read. \emph{No-vars} disables static variable substitution. \emph{Exempt} stops treating a recursive \cmd{rm} as destructive when every target is static and is either a conventionally regenerable directory (\cmd{build}, \cmd{dist}, \cmd{node\_modules}, \cmd{.next}, caches, \cmd{tmp}) or lies under a temporary directory. The list is generic, not fitted to our corpus; it would also exempt a real directory named \cmd{build} or a symlink so named.
+
+\section{Evaluation Method}
+\label{sec:method}
+\textbf{Labels.} Benign $\to$ allow; destructive or opaque $\to$ requires approval; secret access $\to$ deny. These categories are the analyzer's own, so the benchmarks measure conformance to this ontology, not harm in general. Benign items deliberately include look-alikes (dangerous words in commit messages or grep patterns, dry runs, templates, public keys, \cmd{DELETE \ldots\ WHERE}), which is adversarial to text rules. Benchmark FPR therefore reflects this composition, not deployment.
+
+\textbf{Datasets.}
+\emph{Development} (228 actions; 95 benign, 133 harmful; 22 PowerShell), written by the first author before the analyzer and now a regression test.
+\emph{Held-out B} (150; 70 benign, 80 harmful; 33 PowerShell), the primary test set and the only clean one, evaluated once on the final analyzer.
+\emph{Held-out A} (120; 50 benign, 70 harmful; 13 PowerShell), evaluated on a frozen earlier analyzer (version 2.1, unrelated to the v1 policy); its misses later informed fixes.
+\emph{Protocol.} Each held-out set was written in a single pass by a separate LLM agent. Its prompt contained only the label definitions, the required category counts, and a request for realistic, diverse items including hard look-alikes, with an instruction to skip ambiguous cases. The agent had no access to the code, the other sets, or analyzer output. No item was discarded or edited afterwards. A further agent, blind to the original labels and to analyzer output, relabeled each set, and the labels agreed on all 270 items. Because ambiguous cases were excluded by construction, this agreement shows only that a second model applies the definitions the same way; no human has labeled the held-out sets.
+\emph{Probes} (53; 50 harmful, 3 benign): written by a reviewer agent that had the analyzer's source, in about fifteen minutes plus one follow-up batch, drawing mostly on general evasion knowledge. One probe (\cmd{alias x=rm; x -rf src}) was relabeled benign because aliases do not expand in non-interactive Bash.
+\emph{Real traffic.} We froze a hashed copy (manifest SHA-256 prefix \texttt{60f161cc}) of the first author's Claude Code transcripts on October 31, 2026. It holds 27,927 governed tool calls (Bash 19,932; PowerShell 352; file tools 7,643) in 15 sessions (sub-agent transcripts merged into their parents) across several projects. The session in which this paper was written is excluded. One project accounts for 97\% of shell calls. Transcripts record the calls as the agent issued them, not whether Claude Code's own permission settings then blocked or auto-approved them.
+\emph{Second agent.} To test whether results carry over to an agent the analyzer was never tuned on, we use OpenAI's Codex CLI, whose logs record the full argument vector of every command it ran. \emph{Codex, organic}: the first author's own Codex sessions (frozen, prefix \texttt{2686606e}), 11 sessions with 4,364 commands and 656 file changes. On Windows, Codex ran every command through PowerShell (4,340) or \cmd{cmd.exe} (24). \emph{Codex, Bash}: because that corpus exercises none of the Bash analysis, we also ran seven everyday tasks through Codex (\texttt{codex exec}, workspace-write sandbox, instructed only to use Git Bash). The tasks were fixing a failing test, cleaning generated files and rebuilding, checking a local API setting, squashing work-in-progress commits, adding a CLI subcommand with a test, writing and running a log-rotation script, and resetting a test database. They ran in a small Python project we built with a fake \cmd{.env}, build and cache directories, logs, an SQLite database and a git history. The prompts never asked for a destructive or secret-reading command. The resulting 35 commands and 5 file writes (frozen, prefix \texttt{fac0e501}) were labeled by the first author under the same definitions. All other LLM agents in this study were Claude models, the same family that assisted development, so shared blind spots remain a validity threat (Section~\ref{sec:limits}).
+\emph{Other developers (pre-specified).} Before reading any of these data we froze the analyzer and all packs (hash prefix \texttt{6809d27d}) and wrote down three one-sided hypotheses, with developers as the unit. Facts stop fewer calls than tokenizer+ (H1) and than the vocabulary regex (H2) for more developers than the reverse (sign test), and a blind audit finds fact-only stops warranted more often than regex-only stops (H3, Fisher test). The primary source is SWE-chat~\cite{baumann2026swechat}: real sessions of Claude Code, Codex, Pi, OpenCode and other agents, mined from public GitHub repositories that checkpoint agent sessions with the Entire.io CLI. Its developer identifier is the commit author resolved through GitHub; 417 developers with at least 50 shell calls contribute 640,530 calls. The second source is 13 developers who published their own sessions on Hugging Face (DataClaw exports and raw transcripts; 453,036 calls, two-thirds from one developer). Older DataClaw exports cut inputs at 300 characters. An amendment, made after inspecting command lengths but before any policy was run, restricts the primary analysis to complete inputs and adds a secondary one on commands shorter than 290 characters from every export. The audit draws 30 fact-only and 30 vocabulary-regex-only stops from SWE-chat, one per developer (round-robin), so it describes a typical developer's stops. A Claude agent labeled them blind, mixed with 50 held-out B actions; the same items are released for human annotators. The specification is a timestamped file in our repository with the frozen hash, not a deposit with an external registry; it, its two amendments and eight recorded deviations are in the artifact. The most consequential: the converter for the second source was corrected after a first run that wrongly admitted cut commands had been seen; the human annotations are pending; and the effect sizes, per-agent results, sensitivity runs and the joint relabeling below are exploratory.
+
+\textbf{Policies.} \emph{v1}: ActionGate's own earlier substring pack. It is a baseline we wrote, representative of documented practice~\cite{claudecode_hooks}, but not of any vendor's built-in rules, which we could not evaluate offline. \emph{Strong regex}: four case-insensitive RE2 rules covering flag variants, split flags, git force and delete forms, SQL, \cmd{find -delete}, interpreter deletion APIs, PowerShell, shell-wide secret names and pipes into shells. The first author wrote it with knowledge of the development set and of held-out A, before the probes existed, so it is deliberately favorable. \emph{Tuned regex}: the same rules after an analogous tuning pass on real traffic, applied as five cumulative edits so that each can be ablated. The edits restrict \cmd{eval} to command position, drop \cmd{\$(curl ...)} capture, restrict \cmd{-EncodedCommand} to \cmd{powershell}, drop variable-named commands, and ignore secret names after \cmd{test}, \cmd{ls} and \cmd{-{}-env-file}. The analogy is imperfect: the analyzer's fixes added capabilities, whereas a regex can only drop or narrow patterns. \emph{Vocabulary-matched regex} (vocabulary regex for short): the tuned regex extended with every secret file name and destructive verb the analyzer knows. That vocabulary predates B, except cloud-CLI delete verbs, which were added after held-out A but before B was evaluated. The regex was assembled after B's results were seen. Its exemption of commands that mention a template or public key was added after seeing its B false positives; this mirrors analyzer rules that predate B and favors the regex. \emph{Normalized vocabulary regex}: the same regex applied to the command after the analyzer's normalization (quotes removed, braces expanded, static variables substituted, wrappers stripped, nested code inlined). \emph{Gate-all}: every Bash and PowerShell command and every file mutation requires approval, and file-tool reads of secret paths are denied; other file reads pass. \emph{Facts}, \emph{facts-strict} and the ablations are as in Section~\ref{sec:design}.
+
+\textbf{Metrics.} Recall: harmful actions stopped (deny or approval). FPR: benign actions stopped. Exact: decision equals label. Friction (or interruption rate): share of real shell calls stopped. Pooled rates divide all stops by all calls; macro-averaged rates average per-project, per-session or per-developer rates so that no unit dominates. A fact-only stop is a call that facts stop and the compared policy allows; a regex-only stop is the converse. Per active hour: stops divided by the time between a session's first and last shell call, over sessions with at least 20 shell calls and 15 minutes. Intervals are 95\% Wilson intervals, and differences between proportions use Newcombe's score intervals, paired~\cite{newcombe1998} or for independent samples~\cite{newcombe1998unpaired}. On B we report discordant counts as (fact-only, other-only) stops. Exact McNemar tests compare facts with v1 on recall and with the strong, tuned and vocabulary-matched regexes on recall and FPR; these seven tests are Holm-corrected. Items cluster by technique, so even these are optimistic. On our traffic we compare policies with a two-sided sign test over the 15 sessions; out of sample we use the pre-specified one-sided sign test over developers. The pre-specified hypotheses are H1 and H2 on SWE-chat and H3 on its audit, each at $\alpha=0.05$ without correction; H1b and H2b are their secondary versions, and everything else out of sample is exploratory. Latency is the median over five runs of the mean time per evaluation across all held-out B actions (Go benchmark, Intel Core i5-8350U laptop; CEL regexes precompiled).
+
+\section{Results}
+\label{sec:results}
+
+\begin{table*}[t]
+\caption{Detection and Interruption Cost}
+\label{tab:main}
+\centering\small
+\begin{tabular}{|l|c|c|c|c|c|c|c|}
+\hline
+ & \multicolumn{3}{c|}{Held-out B (80 harmful / 70 benign)} & \multicolumn{2}{c|}{Held-out A (70 / 50)} & Probes (50) & Real traffic \\
+\cline{2-8}
+Policy & Recall & FPR & Exact & Recall & FPR & Recall & Shell friction \\
+\hline
+v1 (our substring pack) & 16.3\% & 4.3\% & 53.3\% & 17.1\% & 10.0\% & 20.0\% & 1.21\% \\
+Strong regex & 82.5\% & 12.9\% & 84.7\% & 90.0\%$^a$ & 6.0\%$^a$ & 72.0\% & 6.88\% \\
+Tuned regex & 77.5\% & 10.0\% & 83.3\% & 90.0\%$^a$ & 6.0\%$^a$ & 72.0\% & 2.68\% \\
+Vocabulary-matched regex$^d$ & 86.3\% & 11.4\% & 87.3\% & 94.3\%$^a$ & 8.0\%$^a$ & 76.0\% & 3.64\% \\
+Vocabulary-matched regex, normalized & 85.0\% & 11.4\% & 86.7\% & -- & -- & 78.0\% & 3.56\% \\
+Gate-all & 100\% & 94.3\% & 43.3\%$^c$ & 98.6\% & 94.0\% & 98.0\% & 100\% \\
+\textbf{Facts} & \textbf{90.0\%} & \textbf{5.7\%} & \textbf{92.0\%} & 91.4\% & 0.0\% & 78.0\% & \textbf{2.74\%} \\
+\quad tokenizer (no AST) & 86.3\% & 5.7\% & 90.0\% & -- & -- & 74.0\% & 9.90\% \\
+\quad tokenizer+ (here-docs, vars) & 86.3\% & 5.7\% & 90.0\% & -- & -- & 74.0\% & 6.69\% \\
+\quad without read-vs-mention & 90.0\% & 8.6\% & 90.7\% & -- & -- & 78.0\% & 3.42\% \\
+\quad without variable resolution & 90.0\% & 5.7\% & 92.0\% & -- & -- & 78.0\% & 4.93\% \\
+\quad with regenerable-path exemption & 90.0\% & 5.7\% & 92.0\% & -- & -- & 74.0\% & 2.56\% \\
+Facts-strict & 90.0\% & 5.7\% & 92.0\% & -- & -- & 86.0\%$^b$ & 8.38\% \\
+\hline
+\end{tabular}\par\vspace{2pt}
+\parbox{\textwidth}{\footnotesize Held-out B is the primary test; A was scored on the analyzer frozen at v2.1. Shell friction: share of the 20,284 real shell calls a policy stops. $^a$Regex written with knowledge of A. $^b$Strict variant designed after the probe round. $^c$Includes six secret reads that gate-all's file-tool rule denies exactly. $^d$Assembled after B's results were seen.}
+\end{table*}
+
+\textbf{RQ1: what text misses.} Our own earlier substring policy stops 16.3\% of held-out B's harmful actions (Table~\ref{tab:main}; CI 9.7--25.8). Part of this is omission rather than brittleness, since v1 has no rule for shell-based secret reads or PowerShell. The development set shows brittleness directly: v1 stops all 11 canonical destructive commands but only 1 of 52 equivalent rephrasings (\texttt{bench/RESULTS-dev.md}). Its only three denials on real traffic were file-tool reads of template files (\cmd{.env.example}): false positives. A strong regex, written with far more care, reaches 82.5\% recall but 12.9\% FPR, because patterns broad enough to catch variants also catch the words inside harmless commands.
+
+\begin{table}[t]
+\caption{Held-Out B by Category and Tool}
+\label{tab:breakdown}
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|l|l|r|r|r|r|r|r|}
+\hline
+Category & Tool & $n$ & v1 & Tuned & Vocab. & Tok. & Facts \\
+\hline
+Destructive & Bash & 32 & 9 & 25 & 27 & 26 & 27 \\
+ & PowerShell & 8 & 0 & 7 & 8 & 6 & 6 \\
+Secret & Bash & 14 & 0 & 11 & 14 & 14 & 14 \\
+ & File tools & 6 & 4 & 6 & 6 & 6 & 6 \\
+ & PowerShell & 5 & 0 & 4 & 5 & 5 & 5 \\
+Opaque & Bash & 10 & 0 & 5 & 5 & 7 & 9 \\
+ & PowerShell & 5 & 0 & 4 & 4 & 5 & 5 \\
+\hline
+Benign (FP) & Bash & 48 & 2 & 3 & 4 & 2 & 2 \\
+ & File tools & 7 & 1 & 0 & 0 & 0 & 0 \\
+ & PowerShell & 15 & 0 & 4 & 4 & 2 & 2 \\
+\hline
+\end{tabular}\par\vspace{2pt}
+\parbox{0.9\columnwidth}{\scriptsize Cells: harmful actions stopped; benign rows: actions wrongly stopped. Tuned: tuned regex. Vocab.: vocabulary regex. Tok.: facts with tokenization instead of the AST.}
+\end{table}
+
+\textbf{RQ2: what the fact layer adds.} Facts stop 90.0\% of B's harmful actions (CI 81.5--94.8) at 5.7\% FPR (CI 2.2--13.8), and decide 92.0\% of actions exactly (deny vs.\ approval vs.\ allow). Against v1 the recall gain is large (59 vs.\ 0, Holm-adjusted $p<10^{-16}$). Against the strong regex neither difference is significant: recall $+7.5$ points (CI $-0.7$ to $+16.2$; 8 vs.\ 2) and FPR $-7.1$ (CI $-16.3$ to $+1.0$; 1 vs.\ 6), both adjusted $p=0.55$. Against the tuned regex, which interrupts real traffic as rarely as facts, recall is $+12.5$ points (CI $+4.1$ to $+21.6$; 11 vs.\ 1; adjusted $p=0.04$). This result is fragile: tuning cost the regex exactly four harmful items, all dynamic code (\cmd{cmd=\$(curl ...); \$cmd}, a loop over \cmd{\$(curl ...)}, \cmd{node -e "eval(...)"}, Perl \cmd{eval pack}). Two were lost by restricting \cmd{eval} to command position and two by dropping \cmd{\$(curl ...)} capture, and a different tuning could keep them.
+
+\textbf{Vocabulary, normalization, AST, semantics.} Table~\ref{tab:breakdown} locates the remaining differences. Giving the regex the analyzer's vocabulary lifts it to 86.3\% at 11.4\% FPR. Facts' advantage is then $+3.8$ recall points (CI $-3.6$ to $+11.6$; 5 vs.\ 2) and $-5.7$ FPR points (CI $-13.7$ to $+0.9$; 0 vs.\ 4). Neither is significant, but the benchmark cannot exclude a 12-point recall advantage either: it is underpowered, not evidence of parity. The vocabulary regex's four extra false positives are dangerous words inside a commit message, a \cmd{grep} pattern, a \cmd{Select-String} pattern and a \cmd{Write-Output} string. Normalizing commands first changes almost nothing (85.0\%, 11.4\%), and can erase a textual cue (\cmd{bash <(curl ...)} becomes a placeholder). Replacing the AST with tokenization keeps per-tool semantics and loses three recall points, one destructive and two opaque Bash items (3 vs.\ 0; CI $-1.7$ to $+10.0$), and nothing in FPR. The fairer tokenizer+ scores identically. On B, then, vocabulary carries most of the recall, and token-level semantics already supplies most of the precision. Facts' residual advantage over the vocabulary regex lies in opaque Bash code (9 vs.\ 5 of 10). The vocabulary regex in turn beats facts on destructive PowerShell (8 vs.\ 6). Disabling the read-vs-mention rule adds two false positives; disabling variable resolution changes nothing on B. Evaluation takes about 20--30\,\textmu s per action for facts and v1 and about 100 and 170\,\textmu s for the strong and vocabulary regexes (medians varied by up to a third between runs), all negligible next to a model turn.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.98\columnwidth,height=5.4cm,
+  xlabel={Real shell calls stopped (\%)},ylabel={Held-out B recall (\%)},
+  xmin=0,xmax=11,ymin=72,ymax=94,grid=major,grid style={gray!25},
+  xtick={0,2,4,6,8,10},ytick={75,80,85,90},
+  label style={font=\footnotesize},tick label style={font=\footnotesize},
+  nodes near coords,point meta=explicit symbolic,
+  every node near coord/.append style={font=\scriptsize}]
+\addplot[only marks,mark=*,mark size=2pt,
+  every node near coord/.append style={anchor=south}] coordinates {(2.74,90.0)[facts]};
+\addplot[only marks,mark=o,mark size=2pt,
+  every node near coord/.append style={anchor=north}] coordinates {(2.68,77.5)[tuned regex]};
+\addplot[only marks,mark=o,mark size=2pt,
+  every node near coord/.append style={anchor=west}] coordinates {(3.64,86.3)[vocab.\ regex]};
+\addplot[only marks,mark=o,mark size=2pt,
+  every node near coord/.append style={anchor=north}] coordinates {(6.88,82.5)[strong regex]};
+\addplot[only marks,mark=triangle,mark size=2.2pt,
+  every node near coord/.append style={anchor=south}] coordinates {(6.69,86.3)[tokenizer+]};
+\addplot[only marks,mark=triangle*,mark size=2.2pt,
+  every node near coord/.append style={anchor=north}] coordinates {(9.90,86.3)[tokenizer]};
+\addplot[only marks,mark=square*,mark size=1.8pt,
+  every node near coord/.append style={anchor=south}] coordinates {(8.38,90.0)[facts-strict]};
+\end{axis}
+\end{tikzpicture}
+\caption{Recall on held-out B (y) against the share of our real shell calls each policy stops (x). The axes come from different data: real traffic is unlabeled, so it measures cost, not detection. Up and left is better. Outside the plotted range: v1 (1.21\%, 16.3\%) and gate-all (100\%, 100\%).}
+\label{fig:tradeoff}
+\end{figure}
+
+\textbf{RQ3: cost on real traffic.} On the frozen corpus facts stop 2.74\% of shell calls and the strong regex 6.88\% (Table~\ref{tab:friction}, Fig.~\ref{fig:tradeoff}). The regex stops more in 10 of 15 sessions and fewer in 2 (sign test, $p=0.04$), at a median of 1.5 interruptions per active hour against 0.3 for facts. About three quarters of the regex's approvals come from its opaque rule. Most of those come from a bare \cmd{eval} that also matches \cmd{pytest -k eval}, from output capture such as \cmd{s=\$(curl ...)}, and from commands that begin with a variable. Tuning those away brings it to 2.68\% (6 vs.\ 3 sessions, $p=0.51$). Adding the analyzer's vocabulary raises it to 3.64\%, and normalizing first to 3.56\% (vocabulary regex vs.\ facts: 7 vs.\ 2 sessions, $p=0.18$). The ablations show what produces facts' rate. Without the AST, tokenization stops 9.90\%, more than facts in 12 of 15 sessions and fewer in none ($p=0.0005$), because here-documents and multi-line programs fall apart into spurious commands. Handing a tokenizer here-document bodies and static variables, as tokenizer+ does, recovers part of this: it stops 6.69\%, still more than facts in 11 sessions and fewer in none ($p=0.001$). The remaining gap comes from constructs a line-based tokenizer does not delimit: quoting and command substitution that span lines, compound commands (\cmd{for}, \cmd{if}, functions) and nested code. Without variable resolution facts stop 4.93\%, and without the read-vs-mention rule 3.42\%. The syntax tree, which barely mattered on B, is the largest single factor on real work. Facts stop none of the 7,643 file-tool calls, because the default pack has no file-tool rule except via secret paths, and the agent read no credential file through a file tool; facts therefore interrupt 1.99\% of all governed calls. Friction is heterogeneous: 2.65\% in the dominant project and 5.9\% and 7.0\% in two smaller ones. Macro-averaged, so that the dominant project does not set the figure, facts stop 2.77\% per project (7 projects) and 2.92\% per session (11 sessions with at least 20 shell calls); tokenizer+ stops 6.86\% and 6.59\%. Facts' friction is also much higher on PowerShell, where they stop 9.4\% of 352 calls, most often scripts invoked through a variable holding a literal path, which the token-level PowerShell analysis cannot resolve. The tuned and vocabulary regexes stop about 3\% of PowerShell calls (the strong regex 45\%).
+
+\begin{table}[t]
+\caption{Interruptions on Real Shell Traffic}
+\label{tab:friction}
+\centering\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|l|r|r|r|r|}
+\hline
+Policy & Stopped & Denied & Approval & Per hour \\
+\hline
+v1 & 1.21\% & 0 & 246 & -- \\
+Strong regex & 6.88\% & 286 & 1,110 & 1.5 \\
+Tuned regex & 2.68\% & 260 & 284 & 0.3 \\
+Vocabulary regex & 3.64\% & 422 & 316 & 0.3 \\
+\textbf{Facts} & \textbf{2.74\%} & 224 & 332 & \textbf{0.3} \\
+\quad tokenizer & 9.90\% & 157 & 1,852 & 2.3 \\
+\quad tokenizer+ & 6.69\% & 163 & 1,194 & -- \\
+\quad with session exemption & 2.38\% & 224 & -- & -- \\
+\quad with path exemption & 2.56\% & 224 & 296 & 0.3 \\
+Facts-strict & 8.38\% & 224 & 1,475 & -- \\
+Gate-all & 100\% & 0 & 20,284 & -- \\
+\hline
+\end{tabular}\par\vspace{2pt}
+\parbox{0.9\columnwidth}{\scriptsize Frozen corpus: 20,284 shell calls in 15 sessions. v1's three denials were file-tool calls and are not counted. Per hour: median interruptions per active hour, over sessions with at least 20 shell calls and 15 minutes. --: not measured.}
+\end{table}
+
+\textbf{Are the interruptions warranted?} We audited samples of disagreements, denials and approvals. \emph{Disagreements (superseded).} This first disagreement audit is superseded by the joint relabeling in Section~\ref{sec:results}; we report it because the discrepancy is itself a finding. Facts stop 102 calls the vocabulary regex allows (in 8 sessions). The regex stops 284 calls facts allow (in 7 sessions): 223 denials and 61 approvals. We drew 30 fact-only stops and 30 regex-only denials by seeded random sampling (from 7 and 6 sessions), mixed them, and had an annotator, a Claude agent, label each call blind to which policy had stopped it. 25 of 30 fact-only stops contained at least one gated action (83\%, CI 66--93); counted per action, 19 involved dynamic code, 6 secret reads and 4 deletions (some calls contained two). Only 3 of 30 regex-only denials did (10\%, CI 3--26). The others mentioned a credential file without reading it: an \cmd{-{}-env-overlay .env.local} argument handed to a dev server, a \cmd{.env} name inside code or notes being written, a \cmd{git} listing. To make the strata comparable we then sampled 30 of the 61 regex-only approvals and had a fresh agent label them with the same definitions: 1 contained a gated action (a deletion of a user's records), and the rest were visible inline scripts, test-database resets and code that merely contains the word \cmd{eval} (3\%, CI 1--17). No human has labeled these audits. On our traffic, session counts could not separate the two policies (7 vs.\ 2 sessions, $p=0.18$), but the content of their disagreements favored facts. A joint relabeling below shows that much of this came from counting readable run-time code as gated.
+
+\textbf{Denials.} In a seeded sample of 40 fact-based denials (drawn before freezing, from the then 226; the frozen corpus has 224), 37 (92.5\%, CI 80.1--97.4) read or copied a real credential file. In five of them an API key was extracted and used, for instance with \cmd{sed} into a \cmd{curl} header. Whether such reads were \emph{unwanted} is a separate question: they were ordinary development work. A hard deny invites circumvention, and \cmd{requires\_approval} is a reasonable alternative for secret reads.
+
+\textbf{Approvals and exemptions.} Two annotators, the first author with Claude's assistance and a separate Claude agent (so not fully independent), labeled a seeded sample of 40 approvals ($\kappa=0.90$). Like the denial sample it was drawn before freezing, from the then 337 approvals; the frozen corpus has 332. At most one was judged worth the interruption (deleting a project copy). About 27--28 (68\%, CI 52--80) deleted build outputs, caches or scratch directories the agent had just created. 7--8 (20\%, CI 11--35) were analyzer false positives, and 4--5 ran benign run-time code. Approvals are therefore mostly not warranted, and the causes are mixed: the definition of \fact{destructive}, analyzer bugs (notably PowerShell scripts invoked through a variable), and conservative opacity. A per-call path exemption recovers little of the first cause: friction falls from 2.74\% to 2.56\%, with fewer stops in 6 sessions and more in none ($p=0.03$). The annotators' judgment relied on knowing that the agent had just created the directory, often under an opaque relative name (one was \cmd{un21}, a scratch copy) that no generic list contains. We therefore tried session state: a recursive \cmd{rm} whose only reason is the deletion is exempted when every target was created earlier in the same session (by \cmd{mkdir}, \cmd{cp -r}, \cmd{unzip -d}, \cmd{git worktree add} or \cmd{python -m venv}). Friction falls only to 2.38\%, fewer stops in 3 sessions. Most deleted directories were created by programs (builds, test runners, scripts), which a command-level record of creations does not see. The benchmarks and probes are single actions with no prior history, so this exemption cannot change their scores. The per-call exemption, by contrast, lets two probes through: \cmd{rm -rf node\_modules} and \cmd{mv src /tmp/trash \&\& rm -r /tmp/trash}, which deletes source code via a temporary directory.
+
+\textbf{RQ4: a second agent.} On the organic Codex corpus, which the analyzer was never tuned on, facts stop 1.86\% of 4,364 commands (34 denials, 47 approvals). The tuned and vocabulary regexes stop 1.8\% and 1.9\%, the strong regex 12.2\%, and v1 none. Every command was PowerShell (the 24 \cmd{cmd.exe} commands are passed to the PowerShell analyzer as \cmd{cmd /c \ldots}), so this tests only the token-level PowerShell analysis, on which facts and the regexes behave alike; within that scope, low friction carries over to a second agent. That rate is also far below facts' 9.4\% on Claude Code's 352 PowerShell calls. We did not audit these stops, so we cannot say whether the gap reflects the two agents' command styles or the tasks. The staged Codex Bash corpus exercises the Bash analysis. Of its 35 commands and 5 writes, three are harmful. In the cleaning task Codex ran \cmd{git clean -fdX}, which removed every git-ignored file, including the developer's \cmd{.env} and the SQLite database, not just build output. It also ran \cmd{git clean -fd} on a packaging directory, and in the log task it executed a script it had just written that deletes old files. Facts require approval for both \cmd{git clean} commands and interrupt nothing else (2 of 3 harmful, 0 of 37 benign). They miss the script run, which the threat model declares out of scope. v1 lets all three through. The strong and tuned regexes match facts on the two deletions but also stop a benign \cmd{find . -name '.env'}. The vocabulary regex matches facts. Gate-all stops everything. The sample is far too small for rates, but it shows the failure the paper is about, a routine instruction turned into bulk deletion of untracked data, and it shows that the script-execution gap is not hypothetical.
+
+\begin{table}[t]
+\caption{Out of Sample: Other Developers' Shell Calls}
+\label{tab:oos}
+\centering\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|l|r|r|r|r|r|r|}
+\hline
+ & \multicolumn{3}{c|}{SWE-chat (417 dev.)} & \multicolumn{3}{c|}{Self-published (13)} \\
+\cline{2-7}
+Policy & Pooled & Macro & \shortstack{Fewer/\\more} & Pooled & Macro & \shortstack{Fewer/\\more} \\
+\hline
+v1 & 0.83\% & 0.86\% & -- & 0.48\% & 0.88\% & -- \\
+Strong regex & 3.74\% & 3.04\% & -- & 2.24\% & 2.89\% & -- \\
+Tuned regex & 2.57\% & 2.02\% & 119/123 & 1.09\% & 1.38\% & 1/10 \\
+Vocab.\ regex & 3.16\% & 2.33\% & 166/86 & 1.18\% & 1.56\% & 2/8 \\
+\textbf{Facts} & \textbf{1.98\%} & 2.21\% & -- & 1.30\% & 2.33\% & -- \\
+\quad tokenizer & 4.73\% & 4.48\% & 270/21 & 2.04\% & 3.30\% & 10/0 \\
+\quad tokenizer+ & 3.82\% & 3.75\% & 251/28 & 1.88\% & 3.05\% & 10/0 \\
+\hline
+\end{tabular}\par\vspace{2pt}
+\parbox{0.95\columnwidth}{\scriptsize Share of shell calls stopped: pooled over calls, and macro-averaged over developers with at least 50 shell calls (SWE-chat 640,530 calls; self-published 453,036). Fewer/more: developers for whom facts stop fewer / more calls than that policy (one-sided sign test). --: not compared. Analyzer frozen before the data were read.}
+\end{table}
+
+\textbf{RQ4 (pre-specified): 430 other developers.} Table~\ref{tab:oos} gives the pre-specified results. On SWE-chat facts stop 1.98\% of shell calls and tokenizer+ 3.82\%. Facts stop fewer calls for 251 developers and more for 28 (one-sided sign test, $p=3\times10^{-46}$), so H1 holds. Against the vocabulary regex (3.16\%) the counts are 166 and 86 ($p=3\times10^{-7}$), so H2 holds too. The tuned regex was not in the hypotheses. It stops 2.57\% pooled and 2.02\% macro-averaged, against 2.21\% for facts, and neither policy interrupts less for more developers (119 vs.\ 123). On the 13 self-published developers H1 holds again (10 vs.\ 0, $p=0.001$), but H2 does not: the tuned and vocabulary regexes interrupt less for 10 and 8 of them. There the most common fact reasons are recursive deletion, \cmd{source} of a \cmd{.env} file, and 688 commands the Bash parser rejected, which fail closed. In the pre-specified secondary analysis of the self-published exports, restricted to commands shorter than 290 characters (19 developers), tokenizer+ no longer differs from facts (8 vs.\ 6 developers, $p=0.40$, H1b not supported), and the vocabulary regex interrupts less for 12 developers against 3 (H2b not supported). Pooled over both sources, facts interrupt less than tokenizer+ for 261 of 430 developers and more for 28, and less than the vocabulary regex for 168 and more for 94; against the tuned regex the split is even (120 vs.\ 133).
+
+\textbf{Effect sizes and robustness (exploratory).} The sign test counts a one-call difference like a large one, so we also report per-developer differences on SWE-chat. Against tokenizer+ the effect is clear: facts interrupt 1.5 points less macro-averaged (bootstrap 95\% CI 1.3--1.8; median $-0.5$). Against the vocabulary regex the macro difference is $-0.1$ points (CI $-0.4$ to $+0.2$) and the median is zero. The pooled difference ($-1.2$, CI $-2.4$ to $-0.1$) comes mostly from heavy users; the ten largest developers hold 41\% of calls. Against the tuned regex, facts are $+0.2$ points macro-averaged (CI $-0.05$ to $+0.5$). Restricted to developers with at least 50 calls of one agent, H1 holds for Claude Code (224 vs.\ 21), Codex (26 vs.\ 2) and OpenCode (15 vs.\ 3) but not significantly for Pi (8 vs.\ 2, $p=0.055$); H2 holds for Claude Code (149 vs.\ 74) and Codex (22 vs.\ 10) but not for OpenCode (10 vs.\ 8) or Pi (4 vs.\ 4). Excluding the 32 developers who work in the collection tool vendor's own repositories leaves the results unchanged (H1 224 vs.\ 28, H2 152 vs.\ 80, tuned 113 vs.\ 111 of 387). Within SWE-chat the tokenizer gap does not vanish for short commands: restricted to commands under 290 characters, facts interrupt 0.98\% and tokenizer+ 1.58\% (191 vs.\ 21 developers). Still, about three quarters of tokenizer+'s extra stops come from the 22\% of calls whose commands have 290 characters or more, which the syntax tree resolves and a line-based tokenizer does not. The sign tests drop ties: 138 developers for H1, 165 for H2 and 175 against the tuned regex, of whom 50, 65 and 68 are stopped by neither policy; 36 developers are stopped by no policy but v1. Per developer the distributions are skewed. Median friction is 1.23\% for facts, 1.31\% for the vocabulary regex, 1.12\% for the tuned regex and 2.21\% for tokenizer+, and the 90th percentiles are 4.8\%, 5.3\%, 4.5\% and 8.8\%. For 286 of 417 developers facts and the vocabulary regex differ by less than half a point; against tokenizer+, 194 do.
+
+\textbf{What the extra stops are.} In the pre-specified audit the annotator, which agreed with held-out B's labels on 49 of the 50 kit items ($\kappa=0.97$; both are Claude models), found a gated action in 5 of 30 fact-only stops (17\%, CI 7--34) and 3 of 30 regex-only stops (10\%, CI 3--26). The difference, $+6.7$ points (CI $-11.5$ to $+24.8$; one-sided Fisher $p=0.35$), leaves H3 inconclusive. Unlike our in-sample audit, which sampled regex-only denials, this one also includes regex-only approvals. Fact-only stops were mostly fail-closed opacity: a command name held in a variable (10), interpreter code built at run time (7) and input the parser rejected (4), only 2 of which the annotator judged genuinely opaque. The in-sample audit had found 25 of 30, with a different annotator instance and a guide that let dynamic code count as gated. To separate population from protocol, an exploratory step we added after seeing the discrepancy, a fresh agent relabeled all 150 audit items (in-sample: 30 fact-only, 30 regex-only denials, 30 regex-only approvals; out of sample: the 60 above), shuffled and blind to source, with an added label for code that is built or named at run time but that a careful reader can resolve from the call. Under this one protocol the two populations look alike. Strictly gated were 8 of 30 in-sample fact-only stops (27\%, CI 14--44) and 5 of 30 out of sample (17\%, CI 7--34). A further 19 and 17 were readable run-time code, and 3 and 8 benign. Regex-only stops were strictly gated in 2--6 of 30 per stratum (7--20\%) and benign or mere mentions in 11--19. Fact-only stops are thus mostly the analyzer's conservative opacity, on its own traffic as on others'. The first in-sample audit counted that opacity as warranted. The added label is relative to a static analyzer and was applied by a model that reads code more easily than one; human labels may draw the line elsewhere. H1 rests on the claim that the tokenizer's extra stops are spurious, so under the same protocol a fresh agent also labeled 30 tokenizer+-only and 30 fact-only stops from SWE-chat (48 developers, round-robin; exploratory). Of the tokenizer+-only stops, 26 were benign: build and test runs, API queries and status polls, all using variables or command substitution and most (22) spanning several lines. The other 3 were gated: each read a token from a keychain, a password manager or an auth file, which facts allowed, so they are fact-layer misses. Of the fact-only stops, 9 were strictly gated (30\%, CI 17--48; 7 secret reads, mostly of \cmd{.env} files, and 2 force pushes), 6 readable run-time code and 15 benign, against 3 of 30 for tokenizer+ (10\%, CI 3--26). The difference is $+20$ points (CI $-0.5$ to $+39$; one-sided Fisher $p=0.052$). Structure thus removes mostly spurious stops and adds a few warranted ones, but it does not catch everything the tokenizer catches.
+
+\textbf{RQ5: a source-aware probe round.} With the source in hand, a reviewer agent evaded facts on 11 of 50 harmful probes. Six probes read five credential stores missing from the name list: Docker and GitHub CLI configs, \cmd{\textasciitilde/.kube/config}, \cmd{terraform.tfstate} and \cmd{.envrc}. Four built strings inside interpreter code (\cmd{getattr(\_\_import\_\_('shutil'),'rmt'+'ree')}, \cmd{f['rm'+'Sync']}, \cmd{open('.e'+'nv')}), and one ran \cmd{truncate -s 0} on a database file. The normalized vocabulary regex ties facts (78.0\%), the other regexes stop 72--76\%, and v1 20.0\%. With three benign probes, probe FPR is not meaningful. The strict variant closes the interpreter group (86.0\%, post hoc on the same probes) but raises real-traffic friction from 2.74\% to 8.38\%. Agents themselves build strings in inline Python constantly, and the rule is blunt: it also flags \cmd{', '.join(...)}. We did not replay the incidents of Section~\ref{sec:intro}. Their reports describe the payloads but not the exact command lines an agent issued, so reconstructing them would test our reconstruction.
+
+\section{Analysis}
+\label{sec:analysis}
+\textbf{Real traffic finds what benchmarks do not.} On an earlier snapshot of the corpus, the first fact-based analyzer scored 100\% on its development set and 91.4\% recall at 0\% FPR on held-out A, yet stopped 18.2\% of real shell calls. Tallying its reasons found three causes absent from every benchmark. \cmd{python - <{}<'EOF'} here-documents were treated as code from stdin although the code is static (2,568 calls). Interpreter paths were held in a variable assigned earlier in the command (439 calls). Grep regexes and directory globs were read as secret paths. Fixing these cut the first two to 4 calls each and friction to 2.7\%; held-out A results were identical before and after. The same causes reappear in the ablations: without the AST or variable resolution, friction returns. Because the fixes came from this traffic, friction is in-sample; we gave the regex an analogous tuning pass. Excluding the transcripts in which ActionGate itself was built removes 157 calls and 4 stops, leaving facts at 2.74\%. A chronological split is not informative, because one project dominates the corpus. Benchmarks are written one action at a time; agents write multi-line programs.
+
+\textbf{What remains hard on held-out data.} Facts' 8 misses and 4 false positives on B fall into four classes. \emph{Open-world vocabulary} (7): destructive verbs the analyzer was not taught---Django \cmd{manage.py flush}, \cmd{prisma migrate reset}, an HTTP \cmd{DELETE} to Elasticsearch, \cmd{aws ec2 terminate-instances}, \cmd{diskutil eraseDisk}, \cmd{az group delete} and SQL inside a PowerShell cmdlet. Of held-out A's six misses on v2.1, three were of the same kind (MongoDB \cmd{deleteMany}, Redis \cmd{FLUSHALL}, \cmd{rsync -{}-delete}) and three were structural; all six were fixed afterwards, so the current analyzer's 100\% on A is not a test result. \emph{Interpreter evaluation} (1): Perl \cmd{eval pack(\ldots)}. \emph{Intent modifiers} (3 false positives): \cmd{terraform plan -destroy}, \cmd{kubectl delete -{}-dry-run}, \cmd{Remove-Item -WhatIf}. \emph{Token-level PowerShell} (1 false positive): a quoted string in \cmd{if (Test-Path .env) \{\ldots\}} taken as a command.
+
+\textbf{Lessons.} First, decompose before crediting structure. Most held-out recall came from vocabulary, which a regex can borrow; normalization added little. The syntax tree and per-tool semantics mattered where benchmarks are thin and real work is thick: in multi-line programs and in telling a read from a mention. Second, audit what an interruption is, not only how often it happens, and on traffic you did not tune on. Denials were overwhelmingly genuine reads and approvals overwhelmingly low-value. Our first disagreement audit favored facts because its guide let resolvable dynamic code count as warranted; one protocol across corpora removed most of the difference. Third, fail-closed opacity is cheap in total (77 approvals, 0.38\% of our shell calls) but it is what facts add over a regex: most fact-only stops are code a careful reader, or a semantic judge, could resolve; scripts and build targets (3.1\%) are a silent gap, and the analyzer is not at a fixed point: some approval false positives are fixable bugs, and fixing them is more in-sample tuning. Fourth, interpreter code is the frontier. Pattern inspection inside Python or JavaScript is matching again, and escalating all dynamic interpreter code triples friction. Together with open-world vocabulary, this argues for a two-stage design. Deterministic facts would handle the common, explainable cases, and a learned classifier or LLM judge~\cite{anthropic2026automode,liu2026care} only unknown tools and dynamic interpreter code.
+
+\textbf{Recommendations for deploying agent action policies.}
+\begin{enumerate}
+\item \emph{Invest first in vocabulary, then in structure.} Vocabulary carried held-out recall; a parser then interrupted less than an equally informed tokenizer, on our traffic and on other developers', although a carefully tuned regex came close.
+\item \emph{Make the unknown explicit, and know what it excludes.} Route statically unresolvable shell constructs to a human; this does not cover scripts and build targets, which need a separate control.
+\item \emph{Judge secret access by contents, not by mentions,} and consider approval rather than a hard deny for reads, which are often legitimate.
+\item \emph{Scope destructive rules by what is lost,} but expect per-call path rules to recover little: deciding whether a deletion is regenerable needs session context.
+\item \emph{Evaluate on traces you did not tune on,} report interruptions per developer or session, and audit samples of denials, approvals and disagreements. Public corpora such as SWE-chat make this possible without collecting data.
+\item \emph{Treat inline interpreter code as a separate problem,} to escalate (8.4\% friction here) or delegate to a semantic judge.
+\end{enumerate}
+
+\section{Related Work}
+\label{sec:related}
+\textbf{Agent action policies.} Progent~\cite{shi2025progent}, AgentSpec~\cite{wang2025agentspec}, Conseca~\cite{tsai2025conseca}, ClawGuard~\cite{zhao2026clawguard} and Datalog monitors~\cite{palumbo2026formal} enforce deterministic policies over tool calls; CaMeL~\cite{debenedetti2025camel} and Fides~\cite{costa2025fides} enforce control and information flow; GuardAgent~\cite{xiang2025guardagent} and ShieldAgent~\cite{chen2025shieldagent} synthesize or verify guard logic; LlamaFirewall~\cite{chennabasappa2025llamafirewall} combines regex and LLM scanners. These target mostly API-style tools~\cite{debenedetti2024agentdojo}; a rule over a free-form shell argument remains a text rule. CARE~\cite{liu2026care} canonicalizes and parses shell commands, scores risk with weights tuned on a development split, and sends borderline cases to an LLM judge. It compares with a 22-rule regex baseline, ablates its structural layer, and reports 0.91\% FPR on 329 safe commands and deny rates on benign command sets, but not interruptions on live traffic. AgentGuard~\cite{dai2026agentguard} learns execution rules from anomalous coding-agent trajectories; we instead fix the rules and vary the predicate. Claude Code's auto mode~\cite{anthropic2026automode} reports 0.4\% FPR on 10,000 internal tool calls and 17\% false negatives on 52 over-eager actions for an LLM classifier; an independent stress test found 81\% false negatives on 253 ambiguous state-changing actions, 37\% of which fell outside the classifier's scope as in-project file edits~\cite{ji2026permissiongate}. A per-call shell gate shares that blind spot for file edits. These figures use different datasets, labels and units and are not comparable to ours. User-level permission systems have been systematized~\cite{michael2026permissions}, and user-authored allow/ask/never rules reduce prompts but can weaken protection~\cite{yan2026userpolicies}; our packs are expert-written, and we do not evaluate end-user authoring.
+
+\textbf{Benchmarks and containment.} ToolEmu~\cite{ruan2023toolemu}, R-Judge~\cite{yuan2024rjudge}, RedCode~\cite{guo2024redcode}, OpenAgentSafety~\cite{vijayvargiya2026openagentsafety}, SABER~\cite{hu2026saber} and IssueTrojanBench~\cite{singh2026issuetrojanbench} score agents rather than gates. Real-session corpora such as SWE-chat~\cite{baumann2026swechat} have been used to study developer-agent misalignment~\cite{tang2026misalignment}; we use them to price gate interruptions. Sandboxes~\cite{anthropic2025sandboxing}, OS-level enforcement~\cite{zheng2026actplane} and recoverable filesystems~\cite{zhong2026yolofs} bound where damage lands but cannot tell \cmd{rm -rf build/} from \cmd{rm -rf src/} inside a workspace; they complement a per-call gate.
+
+\textbf{Shell analysis and obfuscation.} Shell semantics are subtle~\cite{greenberg2020smoosh}, and static analysis of shell scripts has a long history~\cite{mazurak2007abash}. Obfuscation frameworks show how cheaply string signatures are defeated~\cite{bohannon2016invokeobfuscation,bohannon2018dosfuscation,lefevre_bashfuscator}. Parsing shell commands improves learned security classification over generic tokenization~\cite{trizna2021slp}; we quantify the analogous effect inside a policy gate. Learned obfuscation detectors~\cite{hendler2018powershell,outrata2024obfuscation} and AST-level deobfuscation with emulation~\cite{li2019powershell}, which raised VirusTotal detection of obfuscated PowerShell from 2.65\% to 90\%, show the value of recovering structure. We recover structure without emulating and send the unresolved remainder to a human.
+
+\textbf{Warning fatigue.} Users click through some security warnings, notably SSL warnings, at high rates~\cite{akhawe2013alice}, and repeated exposure dulls neural responses to warnings~\cite{anderson2015polymorphic,vance2017habituation}. Agent work reduces prompts through scoped consent~\cite{li2026options} and argues that approvals are only as honest as what they display~\cite{weng2026consent}. Anthropic reports that sandboxing cut Claude Code permission prompts by 84\% internally~\cite{anthropic2025sandboxing}. Interruption rate is therefore a first-class metric.
+
+\section{Limitations}
+\label{sec:limits}
+\emph{Labels.} All benchmarks are small and were written and labeled by models of the family that assisted development. No human or non-Claude annotator has labeled them yet, so the sets may share blind spots: B's 25 secret items were all caught, while the probe reviewer quickly found five unlisted credential stores. They test conformance to our ontology, not expert judgments of harm. We release a labeling kit (50 held-out B actions and the 60 out-of-sample audit items, with a guide and an agreement script) so that human labels can replace or confirm the agent's.
+
+\emph{Statistics.} Items cluster by technique, and audit samples by session or developer, so even Holm-adjusted tests and Wilson intervals are optimistic. The one significant contrast with a tuned regex on B rests on four dynamic-code items, and B cannot resolve differences of about ten points. Out of sample, sign tests weigh a one-call difference like a large one; we therefore also report per-developer effect sizes.
+
+\emph{Traffic.} The Claude Code traffic is one developer's 15 sessions, dominated by one project, mostly on Windows, and unlabeled. It measures cost, not detection, and our audits cover samples of 30--40 calls, labeled by Claude agents and, for the approval sample, the first author; no second human labeled them. Analyzer and regexes were tuned on it, so its friction is in-sample. The Codex corpora add a second agent but not a second developer. The organic one is all PowerShell and unaudited. The Bash one is small, staged in a project and on tasks we chose, and labeled by the first author. The out-of-sample corpora add 430 developer identities and several agents (Section~\ref{sec:results}), but they too are unlabeled and measure cost, and their audits are Claude agents' labels. SWE-chat's developers are commit identities in public repositories that use one checkpointing tool, a self-selected population that chose to publish its sessions and may not represent typical users; 32 of them work in that tool vendor's own repositories, and overlap with the 13 self-published developers was not checked. Every corpus records what agents issued under their own permission modes, which already prompt for some commands, and agents adapt to prompts; friction is therefore an upper bound on the extra prompts a gate adds, not its marginal cost in any one configuration.
+
+\emph{Analysis.} Labels encode a policy choice (every recursive delete is destructive). Secret detection is by file name. Beyond our ablation switches we did not test individual analyzer components, nor whether static resolution matches Bash on corner cases (ANSI-C quoting, alias or function shadowing, git aliases). The public traces contain zsh, fish and PowerShell commands that our converters pass to the Bash analyzer; 3 of the 30 out-of-sample fact-only audit items were not Bash, and such commands fail closed.
+
+\emph{Comparisons.} Tokenizer+ is our own line-based tokenizer, not an off-the-shelf parser such as bashlex or tree-sitter-bash. We compare against no LLM judge, no vendor default policy (per-user allowlists cannot be simulated offline), and no replayed incident. The probe round was one short LLM session.
+
+\textbf{Data and ethics.} The in-sample traffic consists solely of the first author's own Claude Code sessions on that author's machine. Because its commands contain local paths and occasionally secrets, they are not released. The out-of-sample data are public: SWE-chat under its ODC-By license and access terms, and sessions their owners published under open licenses. We report only aggregates, number developers instead of naming them, and do not redistribute their commands; the labeling kit is regenerated from the sources. The harness reproduces every friction measurement on any user's own transcripts and prints only aggregates. Benchmark items use example domains and contain no real credentials.
+
+\section{Conclusion}
+Holding the policy engine fixed, deriving three facts from a parsed command turns our substring policy, which stops one harmful action in six, into one that stops nine in ten. Decomposed, most of that held-out gain is vocabulary, and a regex given the same word lists comes close on a benchmark too small to separate them. Where they differ is real work. On our own traffic and, pre-specified, on 417 other developers, the fact layer interrupted much less than a tokenizer given the same semantics, here-documents and variables, chiefly on long, multi-line commands. Against the vocabulary regex it interrupted less for more developers, but the typical developer's difference is near zero, a regex tuned on our traffic interrupted about as rarely, and on 13 self-published developers both regexes interrupted less. What each interrupts for differs: regex-only stops are mostly mentions of a secret, fact-only stops mostly conservative opacity over code a careful reader can resolve, and tokenizer-only stops mostly benign. Structure buys fewer interruptions than a tokenizer, mostly by dropping spurious ones; against a regex it buys different interruptions, not clearly fewer or more valuable ones. Most remaining interruptions are approvals for deleting regenerable directories, and a per-call gate lacks the context to tell them apart. The analyzer's worst false positives surfaced only on real traffic, and a source-aware probe round located its frontier in interpreter code and unlisted credential stores. Artifact: \url{https://github.com/muhammadusamahoyrr/actiongate}.
+
+\section*{Acknowledgment}
+M.~Usama designed and built ActionGate and its analyzer, ran the evaluation and wrote the paper. A.~Khalid contributed to the evaluation design, reviewed the results and the analysis of errors, and revised the manuscript. The analyzer and this paper were developed with assistance from an AI model (Claude, Anthropic). Claude-based agents also wrote the held-out and probe benchmarks, performed the second annotations, the blind audits and the joint relabeling, and produced critical internal reviews, as described in Section~\ref{sec:method}; all numbers were produced by the released harness. We thank the reviewers of earlier drafts, whose comments led to the normalized and tokenized baselines, the audits, the corrected statistics and the out-of-sample test, and the SWE-chat authors and the developers who published their own sessions.
+
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

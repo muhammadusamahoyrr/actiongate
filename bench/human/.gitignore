@@ -1,0 +1,7 @@
+# Commands from SWE-chat are not redistributed; regenerate with
+# agbench -calls ... -disagree facts:vocab -disagree-out bench/human/audit
+# then make_label_kit.py (see docs/research/EVALUATION.md).
+audit-items.jsonl
+label-kit.html
+labels-*.json
+!labels-claude-agent.json

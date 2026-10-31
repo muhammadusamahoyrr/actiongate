@@ -1,0 +1,33 @@
+{
+  "default_decision": "allow",
+  "rules": [
+    {
+      "id": "deny-secrets-file-tools",
+      "description": "Regex, tuning edits 1-4: secret paths through file tools (templates excluded)",
+      "condition": "tool_name in [\"Read\", \"Edit\", \"Write\", \"NotebookEdit\", \"Grep\", \"read_file\"] && ((has(params.file_path) && params.file_path.matches('(?i)((^|[/\\\\x5c])(\\\\.env(\\\\.[a-z0-9_-]+)?|id_(rsa|dsa|ecdsa|ed25519)|\\\\.netrc|\\\\.pgpass|\\\\.git-credentials|credentials)|\\\\.(pem|key|p12|pfx))$') && !params.file_path.matches('(?i)\\\\.(example|sample|template|dist)$')) || (has(params.path) && params.path.matches('(?i)((^|[/\\\\x5c])(\\\\.env(\\\\.[a-z0-9_-]+)?|id_(rsa|dsa|ecdsa|ed25519)|\\\\.netrc|\\\\.pgpass|\\\\.git-credentials|credentials)|\\\\.(pem|key|p12|pfx))$') && !params.path.matches('(?i)\\\\.(example|sample|template|dist)$')) || (has(params.glob) && params.glob.matches('^\\\\.env')))",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "deny-secrets-shell",
+      "description": "Regex, tuning edits 1-4: secret file names anywhere in a shell command",
+      "condition": "tool_name in [\"Bash\", \"bash\", \"PowerShell\"] && has(params.command) && params.command.matches('(?i)((^|[\\\\s\\'\"/\\\\x5c=@])\\\\.env(\\\\.(local|production|prod|staging|development|dev|test))?([\\'\"\\\\s;|&)*]|$)|id_(rsa|dsa|ecdsa|ed25519)([\\'\"\\\\s;|&)*]|$)|\\\\.aws[/\\\\x5c]credentials|\\\\.netrc|\\\\.git-credentials|\\\\.(pem|key)([\\'\"\\\\s;|&)]|$))')",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "approve-destructive-shell",
+      "description": "Regex, tuning edits 1-4: destructive commands with flag variations, case-insensitive SQL, common tools, PowerShell",
+      "condition": "tool_name in [\"Bash\", \"bash\", \"PowerShell\"] && has(params.command) && params.command.matches('(?i)(\\\\brm\\\\s+(-[a-z]*r[a-z]*|--recursive)|\\\\brm\\\\s+(-[a-z]+\\\\s+)+-[a-z]*r|git\\\\s+(-c\\\\s+\\\\S+\\\\s+)?push\\\\b[^;&|]*(\\\\s(-[a-z]*f[a-z]*|--force\\\\S*|--mirror|--delete|-d)\\\\b|\\\\s\\\\+\\\\S|\\\\s:\\\\S)|git\\\\s+reset\\\\s+--hard|git\\\\s+clean\\\\s+-[a-z]*f|git\\\\s+branch\\\\s+-d\\\\b|\\\\bfind\\\\b[^;&|]*\\\\s-delete\\\\b|-exec(dir)?\\\\s+rm\\\\b|\\\\b(drop|truncate)\\\\s+(table|database|schema)\\\\b|delete\\\\s+from\\\\s+\\\\S+\\\\s*;?\\\\s*[\\'\"]|\\\\bdd\\\\b[^;&|]*of=/dev/|\\\\bmkfs|\\\\bshred\\\\b|wipefs|rmtree|rmsync|rimraf|remove-item[^;|]*\\\\s-r|\\\\b(rd|rmdir)\\\\s+/s|format-volume|clear-disk|kubectl\\\\s+delete|terraform\\\\s+destroy|docker\\\\s+(system|volume)\\\\s+prune|s3\\\\s+rm\\\\b[^;&|]*--recursive|flushall|flushdb|deletemany|dropdatabase|rsync\\\\b[^;&|]*--delete|:\\\\(\\\\)\\\\s*\\\\{)')",
+      "decision": "requires_approval",
+      "risk_classification": "destructive"
+    },
+    {
+      "id": "approve-opaque-shell",
+      "description": "Regex, tuning edits 1-4: pipes into shells or interpreters, eval, encoded or downloaded code",
+      "condition": "tool_name in [\"Bash\", \"bash\", \"PowerShell\"] && has(params.command) && params.command.matches('(?i)(\\\\|\\\\s*(sudo\\\\s+)?(ba|z|da|k)?sh\\\\b|\\\\|\\\\s*(python3?|node|perl|ruby)\\\\s*(-\\\\s*)?$|\\\\biex\\\\b|invoke-expression|(^|[;&|(]\\\\s*)eval\\\\s|(powershell|pwsh)(\\\\.exe)?\\\\b[^;|]*\\\\s-e(nc|ncodedcommand)?\\\\s|\\\\b(ba|z)?sh\\\\s+<\\\\()')",
+      "decision": "requires_approval",
+      "risk_classification": "opaque"
+    }
+  ]
+}

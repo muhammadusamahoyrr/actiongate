@@ -147,7 +147,7 @@ re-running `protect` with a different `-pack`.
 
 | Pack | Secrets reads | Destructive shell | Everything else |
 |---|---|---|---|
-| `claude-code` (default) | denied | waits for approval (`rm -rf`, force-push, `DROP TABLE`, …) | allowed |
+| `claude-code` (default) | denied (file tools, shell, PowerShell) | waits for approval, however it is spelled (`rm -fr`, `find -delete`, force-push, `DROP TABLE`, `bash -c '…'`, …); code the analyzer cannot inspect also waits | allowed |
 | `paranoid` | denied | **every** shell command and file mutation waits | reads allowed |
 | `relaxed` | denied | only catastrophes wait (`rm -rf /`, `dd`, `mkfs`, `DROP DATABASE`, …) | allowed |
 
@@ -179,7 +179,17 @@ A policy is JSON: a `default_decision` plus an ordered list of rules.
 ```
 
 - **Conditions** are [CEL](https://cel.dev) expressions over `tool_name`,
-  `agent_id`, `environment`, and `params` (the tool call's parameters).
+  `agent_id`, `environment`, `params` (the tool call's parameters) and
+  `facts`.
+- **`facts`** are booleans ActionGate derives by parsing the call
+  (`internal/facts`): `facts.destructive` (bulk delete, history rewrite,
+  destructive SQL), `facts.secret_access` (reads, copies or sends a
+  credential file) and `facts.opaque` (code that cannot be inspected:
+  `eval`, a pipe into a shell, encoded PowerShell). They cover Bash,
+  PowerShell and the file tools; every key is always present, so no `has()`
+  guard is needed. Prefer facts over `params.command.contains(...)`: text
+  matching misses `rm -fr`, `rm -r -f` and `bash -c '...'`
+  ([evaluation](paper/main.pdf)).
 - **Decisions** are `allow`, `deny`, or `requires_approval`.
 - Policies are **compiled before they are stored** — a syntactically broken
   rule, an unknown variable, or a non-boolean condition is rejected at

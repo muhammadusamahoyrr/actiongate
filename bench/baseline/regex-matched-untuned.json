@@ -1,0 +1,33 @@
+{
+  "default_decision": "allow",
+  "rules": [
+    {
+      "id": "deny-secrets-file-tools",
+      "description": "Vocabulary-matched strong regex: secret paths through file tools (templates excluded)",
+      "condition": "tool_name in [\"Read\", \"Edit\", \"Write\", \"NotebookEdit\", \"Grep\", \"read_file\"] && ((has(params.file_path) && params.file_path.matches('(?i)((^|[/\\\\x5c])(\\\\.env(\\\\.[a-z0-9_.-]+)?|[a-z0-9_-]+\\\\.env|\\\\.netrc|\\\\.pgpass|\\\\.git-credentials|\\\\.npmrc|\\\\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|credentials(\\\\.json)?|[^\\\\s\\'\"/\\\\x5c]+\\\\.(pem|key|p12|pfx|jks|keystore)|\\\\.ssh[/\\\\x5c][^\\\\s\\'\"]+))$') && !params.file_path.matches('(?i)\\\\.(example|sample|template|dist)$')) || (has(params.path) && params.path.matches('(?i)((^|[/\\\\x5c])(\\\\.env(\\\\.[a-z0-9_.-]+)?|[a-z0-9_-]+\\\\.env|\\\\.netrc|\\\\.pgpass|\\\\.git-credentials|\\\\.npmrc|\\\\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|credentials(\\\\.json)?|[^\\\\s\\'\"/\\\\x5c]+\\\\.(pem|key|p12|pfx|jks|keystore)|\\\\.ssh[/\\\\x5c][^\\\\s\\'\"]+))$') && !params.path.matches('(?i)\\\\.(example|sample|template|dist)$')) || (has(params.glob) && params.glob.matches('^\\\\.env')))",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "deny-secrets-shell",
+      "description": "Vocabulary-matched strong regex: secret file names anywhere in a shell command",
+      "condition": "tool_name in [\"Bash\", \"bash\", \"PowerShell\"] && has(params.command) && params.command.matches('(?i)((^|[\\\\s\\'\"/\\\\x5c=@<])(\\\\.env(\\\\.[a-z0-9_.-]+)?|[a-z0-9_-]+\\\\.env|\\\\.netrc|\\\\.pgpass|\\\\.git-credentials|\\\\.npmrc|\\\\.pypirc|id_(rsa|dsa|ecdsa|ed25519)|credentials(\\\\.json)?|[^\\\\s\\'\"/\\\\x5c]+\\\\.(pem|key|p12|pfx|jks|keystore)|\\\\.ssh[/\\\\x5c][^\\\\s\\'\"]+)([\\'\"\\\\s;|&)*]|$)|(tar|zip|cp|scp|rsync)\\\\b[^;&|]*\\\\.(ssh|aws|gnupg|kube|docker)([\\'\"\\\\s/;|&)]|$))') && !params.command.matches('(?i)(\\\\.env\\\\.(example|sample|template|dist|defaults|schema)\\\\b|\\\\.pub\\\\b)')",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "approve-destructive-shell",
+      "description": "Vocabulary-matched strong regex: destructive commands with flag variations, case-insensitive SQL, common tools, PowerShell",
+      "condition": "tool_name in [\"Bash\", \"bash\", \"PowerShell\"] && has(params.command) && params.command.matches('(?i)(\\\\brm\\\\s+(-[a-z]*r[a-z]*|--recursive)|\\\\brm\\\\s+(-[a-z]+\\\\s+)+-[a-z]*r|git\\\\s+(-c\\\\s+\\\\S+\\\\s+)?push\\\\b[^;&|]*(\\\\s(-[a-z]*f[a-z]*|--force\\\\S*|--mirror|--delete|-d)\\\\b|\\\\s\\\\+\\\\S|\\\\s:\\\\S)|git\\\\s+reset\\\\s+--hard|git\\\\s+clean\\\\s+-[a-z]*f|git\\\\s+branch\\\\s+-d\\\\b|\\\\bfind\\\\b[^;&|]*\\\\s-delete\\\\b|-exec(dir)?\\\\s+rm\\\\b|\\\\b(drop|truncate)\\\\s+(table|database|schema)\\\\b|delete\\\\s+from\\\\s+\\\\S+\\\\s*;?\\\\s*[\\'\"]|\\\\bdd\\\\b[^;&|]*of=/dev/|\\\\bmkfs|\\\\bshred\\\\b|wipefs|rmtree|rmsync|rimraf|remove-item[^;|]*\\\\s-r|\\\\b(rd|rmdir)\\\\s+/s|format-volume|clear-disk|kubectl\\\\s+delete|terraform\\\\s+destroy|docker\\\\s+(system|volume)\\\\s+prune|s3\\\\s+rm\\\\b[^;&|]*--recursive|flushall|flushdb|deletemany|dropdatabase|rsync\\\\b[^;&|]*--delete|:\\\\(\\\\)\\\\s*\\\\{|git\\\\s+checkout\\\\b[^;&|]*\\\\s\\\\.(\\\\s|$)|git\\\\s+restore\\\\s+\\\\.|git\\\\s+filter-(branch|repo)|git\\\\s+stash\\\\s+clear|truncate\\\\s+[\\\\w.\"]+|delete\\\\s+from\\\\s+[\\\\w.\"]+\\\\s*(;|$)|drop\\\\s+(view|index)\\\\b|-exec(dir)?\\\\s+(shred|unlink)\\\\b|docker\\\\s+volume\\\\s+rm|podman\\\\s+(system|volume)\\\\s+prune|\\\\boc\\\\s+delete|tofu\\\\s+destroy|-destroy\\\\b|s3\\\\s+rb\\\\b[^;&|]*--force|(gcloud|az|helm)\\\\b[^;&|]*\\\\s(delete|uninstall)\\\\b|\\\\bdropdb\\\\b|\\\\.(drop|remove)\\\\s*\\\\(|rsync\\\\b[^;&|]*--remove-source-files|remove_dir_all|rm_rf|fileutils\\\\.rm_r|rmdir[^;&|]*recursive|remove-partition|initialize-disk)')",
+      "decision": "requires_approval",
+      "risk_classification": "destructive"
+    },
+    {
+      "id": "approve-opaque-shell",
+      "description": "Vocabulary-matched strong regex: pipes into shells or interpreters, eval, encoded or downloaded code",
+      "condition": "tool_name in [\"Bash\", \"bash\", \"PowerShell\"] && has(params.command) && params.command.matches('(?i)(\\\\|\\\\s*(sudo\\\\s+)?(ba|z|da|k)?sh\\\\b|\\\\|\\\\s*(python3?|node|perl|ruby)\\\\s*(-\\\\s*)?$|\\\\biex\\\\b|invoke-expression|\\\\beval\\\\b|\\\\s-enc(odedcommand)?\\\\b|<\\\\(\\\\s*curl|\\\\$\\\\(\\\\s*curl|(^|[;&|]\\\\s*)\\\\$\\\\w+\\\\s)')",
+      "decision": "requires_approval",
+      "risk_classification": "opaque"
+    }
+  ]
+}

@@ -80,7 +80,7 @@ Choose a pack when you protect a project, so you don't have to write rules yours
 
 | Pack | Behavior |
 |---|---|
-| `claude-code` (default) | Blocks secrets. Destructive shell commands wait for approval. Everything else passes. |
+| `claude-code` (default) | Blocks secret reads. Destructive and opaque shell/PowerShell commands wait for approval, however they are spelled. Everything else passes. |
 | `paranoid` | Blocks secrets. **Every** shell command and file change waits for approval. Reads pass. |
 | `relaxed` | Blocks secrets. Only catastrophic commands (`rm -rf /`, `dd`, `mkfs`, `DROP DATABASE`…) wait. |
 
@@ -88,15 +88,30 @@ Choose a pack when you protect a project, so you don't have to write rules yours
 actiongate protect claude-code -pack paranoid
 ```
 
-Custom rules are plain JSON with CEL conditions:
+Custom rules are plain JSON with CEL conditions. Rules can test the raw `params`, or the **facts** ActionGate derives by parsing the command: `facts.destructive`, `facts.secret_access` and `facts.opaque`. Every spelling of an operation (`rm -rf`, `rm -r -f`, `'r''m' -fr`, `bash -c '…'`, `find -delete`) yields the same fact, so a rule cannot be dodged by rephrasing:
 
 ```json
-{ "id": "approve-destructive",
-  "condition": "tool_name == \"Bash\" && params.command.contains(\"rm -rf\")",
+{ "id": "approve-destructive-in-prod",
+  "condition": "facts.destructive && environment == \"prod\"",
   "decision": "requires_approval" }
 ```
 
 Policies are compiled before they are saved, so a broken rule is rejected at setup time and never fails at runtime.
+
+---
+
+## Evaluation
+
+The pack was measured on [ActionGate-Bench](bench/): a 150-action held-out set written independently of the analyzer (primary), a white-box adaptive probe set, and 20,417 real Claude Code shell calls. Paper: [docs/paper/main.pdf](docs/paper/main.pdf).
+
+| Policy | Harmful stopped (held-out) | Benign interrupted (held-out) | Adaptive probes stopped | Real shell calls interrupted |
+|---|---|---|---|---|
+| Substring rules (old v1 default) | 16% | 4% | 20% | 1.2% |
+| Strong regex baseline | 83% | 13% | 71% | 6.9% |
+| Gate every command | 100% | 94% | 98% | 100% |
+| **Parsed facts (current default)** | **90%** | **6%** | **76%** | **2.75%** |
+
+Evaluation takes about 35 µs per action. Known gaps (inline interpreter code that builds strings at run time, unlisted credential stores such as `~/.kube/config`, tool-specific dry-run flags) are documented in the paper.
 
 ---
 
@@ -114,14 +129,14 @@ Policies are compiled before they are saved, so a broken rule is rejected at set
 
 ## Built with
 
-Go · PostgreSQL (row-level security, append-only triggers) · pgx + sqlc · River · cel-go · ConnectRPC + Protobuf · Ed25519 · MCP Go SDK · Slack · Testcontainers
+Go · PostgreSQL (row-level security, append-only triggers) · pgx + sqlc · River · cel-go · mvdan/sh · ConnectRPC + Protobuf · Ed25519 · MCP Go SDK · Slack · Testcontainers
 
 ```bash
 make test   # full suite against real PostgreSQL, with -race
 make lint   # buf lint + breaking-change check
 ```
 
-Code layout: `cmd/` has five binaries (`actiongate`, `controlplane`, `gateway`, `ag-hook`, `verify`). `internal/` holds the policy engine, approvals, grants, queue workers, sealer and MCP proxy. Database migrations are in `migrations/` and the wire contract is in `proto/`.
+Code layout: `cmd/` has five binaries (`actiongate`, `controlplane`, `gateway`, `ag-hook`, `verify`) plus the `agbench` evaluation tool. `internal/` holds the policy engine, the shell analyzer (`internal/facts`), approvals, grants, queue workers, sealer and MCP proxy. Database migrations are in `migrations/` and the wire contract is in `proto/`.
 
 ---
 
@@ -134,6 +149,8 @@ Code layout: `cmd/` has five binaries (`actiongate`, `controlplane`, `gateway`, 
 | [Architecture](docs/plan.md) | Design record and decisions |
 | [Tech stack](docs/tech-stack.md) | Technology choices and why |
 | [Verification log](VERIFICATION.md) | What was tested, milestone by milestone |
+| [Paper](docs/paper/main.pdf) | Vocabulary Catches, Structure Calms: decomposing action policies on held-out benchmarks and real traffic |
+| [Reproducing the evaluation](docs/research/EVALUATION.md) | The command behind every number in the paper |
 | [Claude plugin](claude-plugin/) | Slash commands for Claude Code |
 
 ## License
