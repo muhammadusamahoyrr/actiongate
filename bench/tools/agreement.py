@@ -7,6 +7,12 @@ agreement with the held-out B reference labels (benchmark items), and, for
 the public audit items, the share of each policy's exclusive stops that the
 annotator judged to contain a gated action (non-benign), with Fisher's exact
 test between the two policies.
+
+Annotators given with --agent are models; all others are treated as humans.
+Pairs are reported as human vs human, human vs agent or agent vs agent, each
+with kappa on the benchmark items, the audit items and all common items, and
+per-class disagreement counts: for each label, the items on which exactly one
+of the two chose it, and the most frequent label confusions.
 """
 
 import json
@@ -23,8 +29,20 @@ def kappa(a, b):
         return float("nan")
     po = sum(x == y for x, y in zip(a, b)) / n
     ca, cb = Counter(a), Counter(b)
-    pe = sum(ca[l] * cb[l] for l in LABELS) / (n * n)
+    pe = sum(ca[l] * cb[l] for l in set(LABELS) | set(ca) | set(cb)) / (n * n)
     return (po - pe) / (1 - pe) if pe < 1 else 1.0
+
+
+def disagreements(a, b, ids):
+    """Per label: items where exactly one annotator chose it; and confusions."""
+    per = Counter()
+    conf = Counter()
+    for i in ids:
+        if a[i] != b[i]:
+            per[a[i]] += 1
+            per[b[i]] += 1
+            conf[(a[i], b[i])] += 1
+    return per, conf
 
 
 def fisher_greater(a, b, c, d):
@@ -53,17 +71,21 @@ def newcombe_diff(a, n1, b, n2):
 
 
 def main(args):
-    agent = None
-    if "--agent" in args:
+    agents = []
+    while "--agent" in args:
         i = args.index("--agent")
-        agent = args[i + 1]
+        agents.append(args[i + 1])
         args = args[:i] + args[i + 2:]
     key = {k["id"]: k for k in map(json.loads, open(args[0], encoding="utf-8")) if k}
     akey = {k["id"]: k for k in map(json.loads, open(args[1], encoding="utf-8")) if k}
-    ann = {}
-    for p in args[2:] + ([agent] if agent else []):
+    ann, is_agent = {}, {}
+    for p in args[2:] + agents:
         d = json.load(open(p, encoding="utf-8"))
-        ann[d["annotator"]] = {x["id"]: x.get("label") for x in d["labels"] if x.get("label")}
+        name = d["annotator"]
+        if name in ann:
+            raise SystemExit(f"two label files use the annotator name {name!r}")
+        ann[name] = {x["id"]: x.get("label") for x in d["labels"] if x.get("label")}
+        is_agent[name] = p in agents
     names = list(ann)
     for name in names:
         lab = ann[name]
@@ -88,13 +110,26 @@ def main(args):
             lo_d, hi_d = newcombe_diff(ga, na, gb, nb)
             print(f"   Fisher one-sided ({hi} > {lo}): p = {fisher_greater(ga, na - ga, gb, nb - gb):.4g}; "
                   f"difference {100 * (ga / na - gb / nb):+.1f} points (95% CI {100 * lo_d:+.1f} to {100 * hi_d:+.1f})")
+    kinds = {(False, False): "human vs human", (False, True): "human vs agent", (True, True): "agent vs agent"}
     for x in range(len(names)):
         for y in range(x + 1, len(names)):
-            a, b = ann[names[x]], ann[names[y]]
+            nx, ny = names[x], names[y]
+            if is_agent[nx] and not is_agent[ny]:
+                nx, ny = ny, nx  # print the human first
+            a, b = ann[nx], ann[ny]
             common = sorted(set(a) & set(b))
-            for part in ("heldout-b", "public-audit"):
-                ids = [i for i in common if key[i]["source"] == part]
-                print(f"kappa {names[x]} vs {names[y]} on {part} ({len(ids)} items): {kappa([a[i] for i in ids], [b[i] for i in ids]):.2f}")
+            print(f"\n{kinds[(is_agent[nx], is_agent[ny])]}: {nx} vs {ny}")
+            for part in ("heldout-b", "public-audit", "all"):
+                ids = [i for i in common if part == "all" or key[i]["source"] == part]
+                agree = sum(a[i] == b[i] for i in ids)
+                print(f"   {part} ({len(ids)} items): agreement {agree}/{len(ids)}, "
+                      f"kappa {kappa([a[i] for i in ids], [b[i] for i in ids]):.2f}")
+            per, conf = disagreements(a, b, common)
+            print("   disagreements per class (items where exactly one chose it):",
+                  ", ".join(f"{l} {per[l]}" for l in sorted(set(LABELS) | set(per))))
+            if conf:
+                print("   confusions (" + nx + " -> " + ny + "):",
+                      ", ".join(f"{p}->{q} {c}" for (p, q), c in conf.most_common()))
 
 
 if __name__ == "__main__":
