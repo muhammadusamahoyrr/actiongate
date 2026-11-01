@@ -158,7 +158,10 @@ actiongate is up.
 			return 1
 		}
 	case <-ctx.Done():
-		<-errCh // let the server shut down cleanly
+		// Let the server shut down cleanly; report a shutdown error but still exit 0.
+		if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "up: control plane:", err)
+		}
 	}
 	return 0
 }
