@@ -22,6 +22,7 @@ import (
 	"github.com/google/cel-go/cel"
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/facts"
 )
 
 type DecisionKind string
@@ -63,6 +64,10 @@ type Input struct {
 	ToolName    string
 	Environment string
 	Params      map[string]any
+	// Facts, when set, replaces the facts derived from ToolName and Params.
+	// Only the evaluation harness sets it (to compare analyzer variants);
+	// the orchestrator never does, so production facts are always derived.
+	Facts map[string]bool
 }
 
 // RuleTrace records one evaluated rule for the explainability requirement
@@ -93,6 +98,10 @@ func NewEngine() (*Engine, error) {
 		cel.Variable("tool_name", cel.StringType),
 		cel.Variable("environment", cel.StringType),
 		cel.Variable("params", cel.MapType(cel.StringType, cel.DynType)),
+		// facts is derived from tool_name and params by internal/facts
+		// (destructive, secret_access, opaque). Every key is always present,
+		// so rules need no has() guard.
+		cel.Variable("facts", cel.MapType(cel.StringType, cel.BoolType)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("cel environment: %w", err)
@@ -149,7 +158,9 @@ func (e *Engine) Compile(cfg SnapshotConfig) (*CompiledSnapshot, error) {
 		if !ast.OutputType().IsExactType(cel.BoolType) {
 			return nil, fmt.Errorf("rule %q: %w (got %s)", r.ID, ErrNotBoolean, ast.OutputType())
 		}
-		program, err := e.env.Program(ast)
+		// OptOptimize folds constants at plan time, including compiling
+		// constant regex patterns in matches() once instead of per call.
+		program, err := e.env.Program(ast, cel.EvalOptions(cel.OptOptimize))
 		if err != nil {
 			return nil, fmt.Errorf("rule %q: program: %w", r.ID, err)
 		}
@@ -167,9 +178,13 @@ func (s *CompiledSnapshot) Evaluate(in Input) (Decision, error) {
 		"tool_name":   in.ToolName,
 		"environment": in.Environment,
 		"params":      in.Params,
+		"facts":       in.Facts,
 	}
 	if in.Params == nil {
 		activation["params"] = map[string]any{}
+	}
+	if in.Facts == nil {
+		activation["facts"] = facts.Derive(in.ToolName, in.Params).Map()
 	}
 
 	trace := make([]RuleTrace, 0, len(s.rules))

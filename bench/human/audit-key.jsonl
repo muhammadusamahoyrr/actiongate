@@ -1,0 +1,60 @@
+{"agent": "OpenCode", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-8a7d88ac", "id": "q001", "stopped_by": "facts-only"}
+{"agent": "OpenCode", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-995f8070", "id": "q002", "stopped_by": "facts-only"}
+{"agent": "Codex", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-e2e2c0bc", "id": "q003", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-8dfe953f", "id": "q004", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-c8ce2b12", "id": "q005", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-333bf33d", "id": "q006", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-682aae6d", "id": "q007", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-a24ae67b", "id": "q008", "stopped_by": "vocab-only"}
+{"agent": "OpenCode", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-8a7d88ac", "id": "q009", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-157528f2", "id": "q010", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-cb47e442", "id": "q011", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-b22bc77a", "id": "q012", "stopped_by": "facts-only"}
+{"agent": "Codex", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-17c63ff5", "id": "q013", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-0f341917", "id": "q014", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-8256645a", "id": "q015", "stopped_by": "vocab-only"}
+{"agent": "Oh My Pi", "decision_a": "allow", "decision_b": "deny", "dev": "dev-36e0a78f", "id": "q016", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-44ac2d9f", "id": "q017", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-a9f14dc1", "id": "q018", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-a6a20799", "id": "q019", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-06d7338c", "id": "q020", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-85da05d7", "id": "q021", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-8454f0ad", "id": "q022", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-cb47e442", "id": "q023", "stopped_by": "facts-only"}
+{"agent": "Codex", "decision_a": "allow", "decision_b": "deny", "dev": "dev-d36b4eb2", "id": "q024", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-4f64c092", "id": "q025", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-f70da809", "id": "q026", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-0ca9a350", "id": "q027", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-d478360c", "id": "q028", "stopped_by": "vocab-only"}
+{"agent": "Codex", "decision_a": "deny", "decision_b": "allow", "dev": "dev-b6cbdced", "id": "q029", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "deny", "decision_b": "allow", "dev": "dev-b5899f79", "id": "q030", "stopped_by": "facts-only"}
+{"agent": "OpenCode", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-6ae894cb", "id": "q031", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-9ded2912", "id": "q032", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-c96acb02", "id": "q033", "stopped_by": "vocab-only"}
+{"agent": "Pi", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-4c609922", "id": "q034", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-5f76e43c", "id": "q035", "stopped_by": "facts-only"}
+{"agent": "Codex", "decision_a": "allow", "decision_b": "deny", "dev": "dev-65ef50f4", "id": "q036", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-1493d8f4", "id": "q037", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-c3b0db05", "id": "q038", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-a1dc47ff", "id": "q039", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-5ef2ae86", "id": "q040", "stopped_by": "facts-only"}
+{"agent": "Oh My Pi", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-36e0a78f", "id": "q041", "stopped_by": "facts-only"}
+{"agent": "Pi", "decision_a": "allow", "decision_b": "deny", "dev": "dev-4c609922", "id": "q042", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-a9f14dc1", "id": "q043", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "deny", "decision_b": "allow", "dev": "dev-f70da809", "id": "q044", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-ed874771", "id": "q045", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-8a90bafc", "id": "q046", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-dfdc74a6", "id": "q047", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-06cf801d", "id": "q048", "stopped_by": "vocab-only"}
+{"agent": "Codex", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-3699a96b", "id": "q049", "stopped_by": "facts-only"}
+{"agent": "Codex", "decision_a": "allow", "decision_b": "requires_approval", "dev": "dev-16b30524", "id": "q050", "stopped_by": "vocab-only"}
+{"agent": "Pi", "decision_a": "allow", "decision_b": "deny", "dev": "dev-6bca26e3", "id": "q051", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-71ffffe8", "id": "q052", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-cb2b5ded", "id": "q053", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-c8ce2b12", "id": "q054", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-5f76e43c", "id": "q055", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-f966cd61", "id": "q056", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-8ec92995", "id": "q057", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-19dc0263", "id": "q058", "stopped_by": "vocab-only"}
+{"agent": "Claude Code", "decision_a": "requires_approval", "decision_b": "allow", "dev": "dev-f966cd61", "id": "q059", "stopped_by": "facts-only"}
+{"agent": "Claude Code", "decision_a": "allow", "decision_b": "deny", "dev": "dev-157528f2", "id": "q060", "stopped_by": "vocab-only"}

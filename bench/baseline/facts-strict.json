@@ -1,0 +1,33 @@
+{
+  "default_decision": "allow",
+  "rules": [
+    {
+      "id": "deny-secrets",
+      "description": "Block reading, copying or sending credential files (.env, private keys, cloud credentials) through any file tool or shell",
+      "condition": "facts.secret_access",
+      "decision": "deny",
+      "risk_classification": "secrets"
+    },
+    {
+      "id": "approve-destructive",
+      "description": "Require human approval for bulk deletes, history rewrites and destructive SQL, however the command is spelled",
+      "condition": "facts.destructive",
+      "decision": "requires_approval",
+      "risk_classification": "destructive"
+    },
+    {
+      "id": "approve-opaque",
+      "description": "Require human approval for code the analyzer cannot inspect (eval, pipe into a shell, encoded commands)",
+      "condition": "facts.opaque",
+      "decision": "requires_approval",
+      "risk_classification": "opaque"
+    },
+    {
+      "id": "approve-inline-dynamic",
+      "description": "Strict variant: inline interpreter code that builds strings or names at run time waits for a human",
+      "condition": "facts.inline_dynamic",
+      "decision": "requires_approval",
+      "risk_classification": "opaque"
+    }
+  ]
+}
