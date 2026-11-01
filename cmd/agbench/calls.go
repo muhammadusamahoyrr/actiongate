@@ -326,12 +326,12 @@ func writeDisagreements(packs []pack, calls []callRecord, results [][]outcome, s
 		items = append(items, item{j, b + "-only"})
 	}
 	r.Shuffle(len(items), func(x, y int) { items[x], items[y] = items[y], items[x] })
-	fi, err := os.Create(prefix + "-items.jsonl")
+	fi, err := os.Create(prefix + "-items.jsonl") //nolint:gosec // G304: writing to the prefix the user named is the point
 	if err != nil {
 		return err
 	}
 	defer func() { _ = fi.Close() }()
-	fk, err := os.Create(prefix + "-key.jsonl")
+	fk, err := os.Create(prefix + "-key.jsonl") //nolint:gosec // G304: writing to the prefix the user named is the point
 	if err != nil {
 		return err
 	}
