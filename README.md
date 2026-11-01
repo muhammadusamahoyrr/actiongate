@@ -16,6 +16,8 @@ Claude Code, Cursor and other agents can run shell commands, delete files and re
 
 Every decision goes into a tamper-evident audit log that you can verify yourself.
 
+> 📄 **Research paper:** *What Parsing Buys an Action Policy: Detection, Interruptions and Their Value for AI Coding Agents* ([PDF](docs/paper/main.pdf)). It measures what parsing shell commands buys a policy over matching their text, on a held-out benchmark and in a pre-specified test on 417 other developers' sessions. See [Research](#research).
+
 ![actiongate in action: .env read blocked, rm -rf paused for Slack approval, audit chain verified](docs/assets/hero.svg)
 
 ---
@@ -100,18 +102,49 @@ Policies are compiled before they are saved, so a broken rule is rejected at set
 
 ---
 
-## Evaluation
+## Research
 
-The pack was measured on [ActionGate-Bench](bench/): a 150-action held-out set written independently of the analyzer (primary), a white-box adaptive probe set, and 20,417 real Claude Code shell calls. Paper: [docs/paper/main.pdf](docs/paper/main.pdf).
+**Paper:** *What Parsing Buys an Action Policy: Detection, Interruptions and Their Value for AI Coding Agents*, Muhammad Usama, COMSATS University Islamabad, 2026 ([PDF](docs/paper/main.pdf)).
 
-| Policy | Harmful stopped (held-out) | Benign interrupted (held-out) | Adaptive probes stopped | Real shell calls interrupted |
+**Question.** Most agent guardrails decide by matching the command text. What does actually *parsing* the command buy? The paper holds the policy engine fixed and varies only what the rules see: the raw text (a substring pack and four regex policies), or three facts (`destructive`, `secret_access`, `opaque`) derived from a parsed shell syntax tree. Ablations replace the parser with a line tokenizer, an improved tokenizer, or the off-the-shelf tree-sitter-bash parser.
+
+**Held-out benchmark** ([ActionGate-Bench](bench/): 150 actions written independently of the analyzer, evaluated once):
+
+| Policy | Harmful stopped | Benign interrupted | Adaptive probes stopped | Own shell calls interrupted (20,284) |
 |---|---|---|---|---|
-| Substring rules (old v1 default) | 16% | 4% | 20% | 1.2% |
-| Strong regex baseline | 83% | 13% | 71% | 6.9% |
-| Gate every command | 100% | 94% | 98% | 100% |
-| **Parsed facts (current default)** | **90%** | **6%** | **76%** | **2.75%** |
+| Substring rules (old v1 default) | 16.3% | 4.3% | 20.0% | 1.21% |
+| Strong regex | 82.5% | 12.9% | 72.0% | 6.88% |
+| Vocabulary-matched regex | 86.3% | 11.4% | 76.0% | 3.64% |
+| Gate every command | 100% | 94.3% | 98.0% | 100% |
+| Line tokenizer+ (no syntax tree) | 86.3% | 5.7% | 74.0% | 6.69% |
+| **Parsed facts (current default)** | **90.0%** | **5.7%** | **78.0%** | **2.74%** |
 
-Evaluation takes about 35 µs per action. Known gaps (inline interpreter code that builds strings at run time, unlisted credential stores such as `~/.kube/config`, tool-specific dry-run flags) are documented in the paper.
+**Pre-specified test on other developers.** The analyzer was frozen before these data were read. On 640,530 shell calls from 417 developers in the public [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) corpus:
+
+| Policy | Calls stopped (pooled) | Per developer (macro) | Developers where facts stop fewer / more |
+|---|---|---|---|
+| Line tokenizer+ | 3.82% | 3.75% | 251 / 28 |
+| Vocabulary-matched regex | 3.16% | 2.33% | 166 / 86 |
+| Tuned regex | 2.57% | 2.02% | 119 / 123 |
+| **Parsed facts** | **1.98%** | **2.21%** | — |
+
+**What we found.**
+- Parsing buys **fewer interruptions** than a line tokenizer with the same rules: facts interrupt less for 251 developers and more for 28.
+- Against a **tuned regex**, parsing buys *different*, not clearly fewer, interruptions. Most of the detection gain is vocabulary: a regex given the analyzer's word lists comes close.
+- Limitations are stated in the paper. Some benchmarks and all audit labels were written by Claude agents (no human labels yet), and the audit of whether the extra stops are warranted was inconclusive. Ten deviations from the pre-specification are listed in [PREREGISTRATION.md](docs/research/PREREGISTRATION.md).
+
+**Reproduce it.** Every number comes from the released harness (`cmd/agbench`), and [EVALUATION.md](docs/research/EVALUATION.md) gives the command behind each table. Policy evaluation takes well under a millisecond per action. Known gaps (inline interpreter code that builds strings at run time, unlisted credential stores such as `~/.kube/config`, tool-specific dry-run flags) are documented in the paper.
+
+**Cite.**
+```bibtex
+@misc{usama2026parsing,
+  author = {Muhammad Usama},
+  title  = {What Parsing Buys an Action Policy: Detection, Interruptions and Their Value for {AI} Coding Agents},
+  year   = {2026},
+  note   = {Preprint},
+  url    = {https://github.com/muhammadusamahoyrr/actiongate}
+}
+```
 
 ---
 
