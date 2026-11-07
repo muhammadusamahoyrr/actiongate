@@ -200,6 +200,9 @@ func serviceStatus() int {
 				return 0
 			}
 			fmt.Printf("control plane at %s: NOT answering — hooked projects fail closed\n", cfg.ServerURL)
+			if st, err := readServiceState(cfgPath); err == nil {
+				fmt.Println(st.describe())
+			}
 			return 1
 		}
 	}
@@ -295,6 +298,10 @@ func serviceHint() string {
 `
 }
 
+// serviceLogMaxBytes caps service.log; one rotated copy (service.log.1) is
+// kept, so the log never uses more than about 20 MB.
+const serviceLogMaxBytes = 10 << 20
+
 func serviceLogPath(cfgPath string) string {
 	return filepath.Join(filepath.Dir(cfgPath), "service.log")
 }
@@ -303,7 +310,7 @@ func serviceLogger(cfgPath string, debug bool) (*slog.Logger, func(), error) {
 	if debug {
 		return slog.New(slog.NewTextHandler(os.Stderr, nil)), func() {}, nil
 	}
-	f, err := os.OpenFile(serviceLogPath(cfgPath), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := openRotatingFile(serviceLogPath(cfgPath), serviceLogMaxBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open service log: %w", err)
 	}
@@ -311,9 +318,11 @@ func serviceLogger(cfgPath string, debug bool) (*slog.Logger, func(), error) {
 }
 
 // serveResilient keeps the control plane alive until ctx is cancelled:
-// wait for config and database (retrying forever — at boot, Docker Desktop
-// arrives whenever the user logs in), migrate, ensure the tenant, serve;
-// on any failure, log and start over. Nothing here ever gives up.
+// wait for config and the database, migrate, ensure the tenant, serve; on
+// any failure, start over. It never gives up, but it backs off (10 s up to
+// 5 min), logs a repeating error only every 10 min, and records what it is
+// waiting for in service-status.json for `actiongate service status`.
+// (Before, it logged the same error every 10 s forever: 130 MB in a day.)
 func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger) {
 	var rt *dbruntime.Embedded
 	defer func() {
@@ -323,11 +332,26 @@ func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger) {
 			_ = rt.Stop(stopCtx, dbruntime.ShutdownFast)
 		}
 	}()
+	retry := newRetrier(10*time.Second, 5*time.Minute, 10*time.Minute)
+	// wait logs (when due) and records a failed step, then sleeps.
+	wait := func(phase, msg string, err error) {
+		delay, suppressed := retry.fail(err)
+		if suppressed >= 0 {
+			args := []any{"error", err, "retry_in", delay.String()}
+			if suppressed > 0 {
+				args = append(args, "repeats_since_last_log", suppressed)
+			}
+			log.Warn(msg, args...)
+		}
+		writeServiceState(cfgPath, serviceState{Phase: phase, Error: err.Error(), NextRetry: time.Now().Add(delay)})
+		sleepCtx(ctx, delay)
+	}
+	defer writeServiceState(cfgPath, serviceState{Phase: "stopped"})
+
 	for ctx.Err() == nil {
 		cfg, err := loadDevConfigAt(cfgPath)
 		if err != nil {
-			log.Warn("config not ready", "path", cfgPath, "error", err)
-			sleepCtx(ctx, 30*time.Second)
+			wait("waiting_for_config", "config not ready", err)
 			continue
 		}
 		if rt == nil {
@@ -337,27 +361,25 @@ func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger) {
 			r, err := startManagedDB(ctx, cfg, cfgPath)
 			if err != nil {
 				if ctx.Err() == nil {
-					log.Warn("database not ready, waiting", "error", err)
-					sleepCtx(ctx, 10*time.Second)
+					wait("waiting_for_database", "database not ready, waiting", err)
 				}
 				continue
 			}
 			rt = r
 		}
 		if err := migrate(ctx, cfg.DatabaseURL); err != nil {
-			log.Error("migrate failed", "error", err)
-			sleepCtx(ctx, 10*time.Second)
+			wait("migrating", "migrate failed", err)
 			continue
 		}
 		if err := ensureTenantResilient(ctx, cfg, cfgPath); err != nil {
-			log.Error("tenant provisioning failed", "error", err)
-			sleepCtx(ctx, 10*time.Second)
+			wait("migrating", "tenant provisioning failed", err)
 			continue
 		}
+		retry.reset()
 		log.Info("starting control plane", "listen", cfg.Listen)
+		writeServiceState(cfgPath, serviceState{Phase: "serving"})
 		if err := runControlPlane(ctx, cfg, log); err != nil && ctx.Err() == nil {
-			log.Error("control plane exited, restarting", "error", err)
-			sleepCtx(ctx, 5*time.Second)
+			wait("restarting", "control plane exited, restarting", err)
 		}
 	}
 }
