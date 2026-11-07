@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -185,5 +186,34 @@ func TestRotateRefusesLinkedBackup(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(victim); string(got) != "precious" { //nolint:gosec // G304: test temp dir
 		t.Errorf("victim changed: %q", got)
+	}
+}
+
+func TestWatchStopRequest(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "dev.json")
+	// A stale request from before start must not stop the new run.
+	if err := requestServiceStop(cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+	stopped := make(chan struct{})
+	go watchStopRequest(ctx, cfg, 10*time.Millisecond, func() { close(stopped) })
+
+	select {
+	case <-stopped:
+		t.Fatal("a stale stop request stopped the new run")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := requestServiceStop(cfg); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop request was not noticed")
+	}
+	if _, err := os.Stat(serviceStopPath(cfg)); !os.IsNotExist(err) {
+		t.Error("stop request file was not consumed")
 	}
 }

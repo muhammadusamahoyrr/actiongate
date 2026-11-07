@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,12 +37,14 @@ func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
 	return r, nil
 }
 
-// The service runs as LocalSystem but its files live in the installing
-// user's profile, which that user can change. A privileged process must not
-// follow a link the user planted there (a symlink or a junction pointing at
-// a system file would make SYSTEM overwrite, rename or delete it), so every
-// write below first checks that the directory and the file are plain.
-// errLinked is returned when one is not.
+// The service's files live in the installing user's profile, which that
+// user can change. The real protection is that the service now runs as that
+// user (service_account_windows.go), so following a planted link gains
+// nothing. Older installs ran as LocalSystem, though, and a privileged
+// process must not follow a link there, so as defence in depth every write
+// below first checks that the directory and the file are plain. This is
+// path-based and has a check-then-use gap, so it is not a security boundary
+// on its own. errLinked is returned when the check fails.
 var errLinked = errors.New("refusing to follow a link or junction in the service directory")
 
 // checkPlain verifies that path's directory is a real directory and that
@@ -185,7 +188,7 @@ func (r *retrier) reset() {
 type serviceState struct {
 	Phase     string    `json:"phase"` // waiting_for_config | waiting_for_database | migrating | serving | restarting
 	Error     string    `json:"error,omitempty"`
-	NextRetry time.Time `json:"next_retry,omitempty"`
+	NextRetry time.Time `json:"next_retry,omitzero"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -250,4 +253,39 @@ func (st serviceState) describe() string {
 		s += "\n  next retry: " + st.NextRetry.Local().Format(time.DateTime)
 	}
 	return s
+}
+
+// serviceStopPath is the stop-request file. The background task cannot
+// receive a service-manager stop, and killing it (schtasks /End) would
+// leave the embedded PostgreSQL running with no owner. So `service stop`
+// writes this file, and the running task watches for it and shuts down
+// cleanly.
+func serviceStopPath(cfgPath string) string {
+	return filepath.Join(filepath.Dir(cfgPath), "service-stop")
+}
+
+func requestServiceStop(cfgPath string) error {
+	return writeNoFollow(serviceStopPath(cfgPath), []byte(time.Now().UTC().Format(time.RFC3339)))
+}
+
+// watchStopRequest calls cancel once a stop request appears. A request
+// left over from before this process started is discarded first, so a
+// stale file can't stop the next start.
+func watchStopRequest(ctx context.Context, cfgPath string, interval time.Duration, cancel func()) {
+	path := serviceStopPath(cfgPath)
+	_ = os.Remove(path)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := os.Lstat(path); err == nil {
+				_ = os.Remove(path)
+				cancel()
+				return
+			}
+		}
+	}
 }
