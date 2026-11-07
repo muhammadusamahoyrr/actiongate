@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/muhammadusamahoyrr/actiongate/internal/fsutil"
 )
 
 // Helpers for the long-running service. They are platform-neutral so they
@@ -38,7 +36,41 @@ func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
 	return r, nil
 }
 
+// The service runs as LocalSystem but its files live in the installing
+// user's profile, which that user can change. A privileged process must not
+// follow a link the user planted there (a symlink or a junction pointing at
+// a system file would make SYSTEM overwrite, rename or delete it), so every
+// write below first checks that the directory and the file are plain.
+// errLinked is returned when one is not.
+var errLinked = errors.New("refusing to follow a link or junction in the service directory")
+
+// checkPlain verifies that path's directory is a real directory and that
+// path itself is a regular file or does not exist.
+func checkPlain(path string) error {
+	di, err := os.Lstat(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	if !di.IsDir() || di.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
+		return fmt.Errorf("%w: %s", errLinked, filepath.Dir(path))
+	}
+	fi, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%w: %s", errLinked, path)
+	}
+	return nil
+}
+
 func (r *rotatingFile) open() error {
+	if err := checkPlain(r.path); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(filepath.Clean(r.path), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -74,6 +106,12 @@ func (r *rotatingFile) rotate() error {
 	}
 	r.f = nil
 	backup := r.path + ".1"
+	if err := checkPlain(r.path); err != nil {
+		return err
+	}
+	if err := checkPlain(backup); err != nil {
+		return err
+	}
 	if err := os.Remove(backup); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -165,7 +203,32 @@ func writeServiceState(cfgPath string, st serviceState) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
-	_ = fsutil.WriteFileAtomic(path, raw, 0o600)
+	_ = writeNoFollow(path, raw)
+}
+
+// writeNoFollow replaces path via a temp file and a rename. Unlike
+// fsutil.WriteFileAtomic it never resolves links: renaming onto a link
+// replaces the link itself, and checkPlain refuses a linked directory.
+func writeNoFollow(path string, data []byte) error {
+	if err := checkPlain(path); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 func readServiceState(cfgPath string) (serviceState, error) {

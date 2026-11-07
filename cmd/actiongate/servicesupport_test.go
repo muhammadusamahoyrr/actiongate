@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -106,5 +108,82 @@ func TestServiceStateRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(st.describe(), "boom") {
 		t.Errorf("describe() = %q", st.describe())
+	}
+}
+
+// linkDir makes link point at target: a junction on Windows (no privilege
+// needed, so any local user can plant one), a symlink elsewhere.
+func linkDir(t *testing.T, target, link string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput() //nolint:gosec // G204: test temp paths
+		if err != nil {
+			t.Skipf("mklink /J: %v %s", err, out)
+		}
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip(err)
+	}
+}
+
+// A user who swaps the service directory for a junction to a system
+// directory must not get SYSTEM to write, rename or delete files there.
+func TestServiceFilesRefuseLinkedDirectory(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim")
+	if err := os.Mkdir(victim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "actiongate")
+	linkDir(t, victim, link)
+
+	writeServiceState(filepath.Join(link, "dev.json"), serviceState{Phase: "serving"})
+	if _, err := openRotatingFile(filepath.Join(link, "service.log"), 100); !errors.Is(err, errLinked) {
+		t.Errorf("openRotatingFile through a junction: got %v, want errLinked", err)
+	}
+	if entries, _ := os.ReadDir(victim); len(entries) != 0 {
+		t.Errorf("files were written through the junction: %v", entries)
+	}
+}
+
+// A status file replaced by a symlink must be replaced, not followed.
+func TestServiceStateDoesNotFollowFileSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "dev.json")
+	if err := os.Symlink(victim, serviceStatePath(cfg)); err != nil {
+		t.Skip("symlinks need privilege here:", err)
+	}
+	writeServiceState(cfg, serviceState{Phase: "serving"})
+	if got, _ := os.ReadFile(victim); string(got) != "precious" { //nolint:gosec // G304: test temp dir
+		t.Errorf("symlink target was overwritten: %q", got)
+	}
+}
+
+func TestRotateRefusesLinkedBackup(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "service.log")
+	if err := os.Symlink(victim, path+".1"); err != nil {
+		t.Skip("symlinks need privilege here:", err)
+	}
+	r, err := openRotatingFile(path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	_, _ = r.Write([]byte("0123456789"))
+	if _, err := r.Write([]byte("x")); !errors.Is(err, errLinked) {
+		t.Errorf("rotation onto a linked backup: got %v, want errLinked", err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "precious" { //nolint:gosec // G304: test temp dir
+		t.Errorf("victim changed: %q", got)
 	}
 }
