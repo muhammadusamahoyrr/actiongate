@@ -61,6 +61,11 @@ func (g *Gateway) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
+// rpcTimeout bounds each control-plane call. Without it a control plane
+// that accepts the connection and then stalls would hang `check` until
+// Claude Code kills the hook, and a killed hook does not block the tool.
+const rpcTimeout = 30 * time.Second
+
 func (g *Gateway) client() (actiongatev1connect.ControlPlaneServiceClient, error) {
 	if g.State == nil || g.State.Credential == "" {
 		return nil, ErrNotEnrolled
@@ -159,7 +164,9 @@ func (g *Gateway) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("params: %w", err)
 	}
-	resp, err := client.SubmitAction(ctx, connect.NewRequest(&actiongatev1.SubmitActionRequest{
+	submitCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := client.SubmitAction(submitCtx, connect.NewRequest(&actiongatev1.SubmitActionRequest{
 		ProtocolVersion: 1,
 		SessionId:       in.SessionID,
 		NativeRequestId: in.NativeRequestID,
@@ -201,9 +208,11 @@ func (g *Gateway) poll(ctx context.Context, client actiongatev1connect.ControlPl
 			return CheckResult{ActionID: actionID}, ctx.Err()
 		case <-time.After(time.Second):
 		}
-		status, err := client.GetActionStatus(ctx, connect.NewRequest(&actiongatev1.GetActionStatusRequest{
+		pollCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
+		status, err := client.GetActionStatus(pollCtx, connect.NewRequest(&actiongatev1.GetActionStatusRequest{
 			ProtocolVersion: 1, ActionId: actionID,
 		}))
+		cancel()
 		if err != nil {
 			return CheckResult{ActionID: actionID}, fmt.Errorf("poll: %w", err)
 		}
@@ -327,7 +336,9 @@ func (g *Gateway) Report(ctx context.Context, in ReportInput) (ReportResult, err
 	if err := proto.Unmarshal(envelopeBytes, &envelope); err != nil {
 		return ReportResult{}, err
 	}
-	resp, err := client.ReportOutcome(ctx, connect.NewRequest(&actiongatev1.ReportOutcomeRequest{
+	reportCtx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := client.ReportOutcome(reportCtx, connect.NewRequest(&actiongatev1.ReportOutcomeRequest{
 		ProtocolVersion: 1, Receipt: &envelope,
 	}))
 	if err != nil {

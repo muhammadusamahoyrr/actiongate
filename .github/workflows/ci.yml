@@ -34,6 +34,11 @@ jobs:
         with:
           version: latest
 
+      # Known vulnerabilities reachable from the shipped binaries (stdlib +
+      # deps). Scoped to cmd/ so test-only helpers (testcontainers) don't count.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./cmd/...
+
       # Testcontainers uses the runner's Docker daemon; the transition suite
       # runs against real postgres:18-alpine, never mocks. The embedded-Postgres
       # packages (dbruntime, health) exercise the SAME PG18 as the bundled

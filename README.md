@@ -58,6 +58,31 @@ This seals real events on a throwaway database, then acts as a malicious DBA: it
 
 ---
 
+## Why not just a `CLAUDE.md` or permission rules?
+
+**An instruction file is a request, not a control.** Writing "never read `.env`" in `CLAUDE.md` or `AGENTS.md` asks the model to behave. Nothing enforces it. In a long session the model can lose track of the instruction or misread it. Text it reads along the way, such as a web page, a README or an issue comment, can tell it to ignore its instructions (prompt injection). When a rule is broken, nothing blocks the action and nothing records it.
+
+**Claude Code's permission rules are enforced, and they are a good first layer.** `permissions.deny` entries in `settings.json`, such as `Read(./.env)` or `Bash(rm -rf:*)`, really do stop matching calls. For one developer with a short list of obvious commands, they may be enough. But they match the *text* of a call, and a shell command can be written many ways: `rm -r -f`, `'r''m' -fr`, `bash -c '…'`, `find . -delete`, `cat .e*`.
+
+ActionGate adds what neither of them can do:
+
+| | `CLAUDE.md` / instructions | Permission rules | ActionGate |
+|---|---|---|---|
+| Enforced: the action cannot run if the rule says no | No | Yes | Yes, and it fails closed if the control plane is unreachable |
+| Judges what a shell command *does*, not how it is spelled | No | No, it matches text patterns | Yes, it parses the command into facts (`destructive`, `secret_access`, `opaque`) |
+| A human approves risky actions from anywhere (Slack) | No | Only a prompt in the local terminal | Yes, with single-use approval tokens |
+| A record of what happened that a database admin can't quietly rewrite | No | No | Yes, a hash-chained, signed audit log checked by `verify` |
+| One policy for a whole team and several agents | No, it's per repo | It's per machine or repo | Yes, a central control plane |
+| Covers MCP tools | No | Partly | Yes, through `gateway mcp` |
+
+**Why parsing matters, in numbers.** On the held-out benchmark in [Research](#research), the substring pack stopped 16.3% of harmful actions and the parsed facts stopped 90.0%, at a 5.7% benign-interrupt rate. The substring pack is the closest analogue to text-pattern rules that the paper measured. The paper did not measure Claude Code's permission rules themselves.
+
+**Use them together.** Keep a `CLAUDE.md`: it makes the agent attempt fewer bad actions in the first place. Keep a few deny rules for the obvious cases. Let ActionGate be the enforcement point that understands the command, asks a human when it matters, and can prove afterwards what ran.
+
+ActionGate only governs what reaches it. By default that is the tools matched by the hook (`Read`, `Edit`, `Write`, `NotebookEdit`, `Bash`, `Grep`) and MCP servers wrapped with `gateway mcp`. To govern more tools, widen the matcher, for example `actiongate protect claude-code -matcher 'Read|Edit|Write|NotebookEdit|Bash|Grep|WebFetch|mcp__.*'`.
+
+---
+
 ## How it works
 
 ```
@@ -155,7 +180,7 @@ Policies are compiled before they are saved, so a broken rule is rejected at set
 - **Any hook-based agent:** `gateway check` exits `0` allowed, `2` denied, `3` timeout.
 - **Windows service:** `actiongate service install` keeps protection running across reboots.
 - **Health report:** `actiongate doctor` checks the database, schema, tenant, keys, sealer and control plane.
-- **Embedded PostgreSQL 18** with backup/restore and safe upgrades. Or point `-db-url` at your own PostgreSQL 18+.
+- **Embedded PostgreSQL 18**, no Docker: downloaded once on the first `actiongate up`. Or point `-db-url` at your own PostgreSQL 18+.
 - **Claude Code plugin** with `/actiongate:protect`, `/actiongate:status` and `/actiongate:tamper-demo`.
 
 ---
@@ -165,8 +190,8 @@ Policies are compiled before they are saved, so a broken rule is rejected at set
 Go · PostgreSQL (row-level security, append-only triggers) · pgx + sqlc · River · cel-go · mvdan/sh · ConnectRPC + Protobuf · Ed25519 · MCP Go SDK · Slack · Testcontainers
 
 ```bash
-make test   # full suite against real PostgreSQL, with -race
-make lint   # buf lint + breaking-change check
+make test   # full suite against real PostgreSQL (Docker), with -race
+make lint   # golangci-lint + buf lint + buf breaking-change check
 ```
 
 Code layout: `cmd/` has five binaries (`actiongate`, `controlplane`, `gateway`, `ag-hook`, `verify`) plus the `agbench` evaluation tool. `internal/` holds the policy engine, the shell analyzer (`internal/facts`), approvals, grants, queue workers, sealer and MCP proxy. Database migrations are in `migrations/` and the wire contract is in `proto/`.

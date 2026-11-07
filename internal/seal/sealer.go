@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,6 +41,8 @@ type Sealer struct {
 	SafetyMargin time.Duration
 	MaxBatch     int
 	Now          func() time.Time
+	// Logger receives sealing errors; Run keeps going after them.
+	Logger *slog.Logger
 }
 
 func (s *Sealer) margin() time.Duration {
@@ -54,6 +57,13 @@ func (s *Sealer) maxBatch() int {
 		return s.MaxBatch
 	}
 	return DefaultMaxBatch
+}
+
+func (s *Sealer) logger() *slog.Logger {
+	if s.Logger != nil {
+		return s.Logger
+	}
+	return slog.Default()
 }
 
 func (s *Sealer) now() time.Time {
@@ -76,8 +86,11 @@ func (s *Sealer) Run(ctx context.Context, interval time.Duration) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if _, err := s.SealAll(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				return err
+			// One failed sweep (a connection blip, one bad stream) must not
+			// stop sealing for good: log it and retry on the next tick.
+			// /healthz reports a sealer that stays stuck.
+			if _, err := s.SealAll(ctx); err != nil && ctx.Err() == nil {
+				s.logger().Error("seal sweep failed; retrying next interval", "error", err)
 			}
 		}
 	}
@@ -107,15 +120,21 @@ func (s *Sealer) SealAll(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("discover streams: %w", rows.Err())
 	}
 
+	// A failing stream must not hold back every other tenant's stream.
 	total := 0
+	var errs []error
 	for _, st := range streams {
 		n, err := s.SealStream(ctx, st.tenant, st.stream)
 		if err != nil {
-			return total, fmt.Errorf("seal %s/%s: %w", st.tenant, st.stream, err)
+			if ctx.Err() != nil {
+				return total, ctx.Err()
+			}
+			errs = append(errs, fmt.Errorf("seal %s/%s: %w", st.tenant, st.stream, err))
+			continue
 		}
 		total += n
 	}
-	return total, nil
+	return total, errors.Join(errs...)
 }
 
 type pendingEvent struct {

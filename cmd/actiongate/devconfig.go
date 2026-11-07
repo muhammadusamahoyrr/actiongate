@@ -6,8 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+
+	"github.com/muhammadusamahoyrr/actiongate/internal/fsutil"
 )
 
 // devConfig is the persisted local-development environment written by
@@ -101,11 +104,7 @@ func saveDevConfig(cfg *devConfig, path string) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("write dev config: %w", err)
-	}
-	return os.Rename(tmp, path)
+	return fsutil.WriteFileAtomic(path, raw, 0o600)
 }
 
 func (c *devConfig) seed(encoded string) ([]byte, error) {
@@ -151,4 +150,13 @@ func randomB64(n int) string {
 		panic(fmt.Sprintf("randomness unavailable: %v", err))
 	}
 	return base64.StdEncoding.EncodeToString(buf)
+}
+
+// redactURL hides the password in a database URL before it is printed.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(unparseable database URL)"
+	}
+	return u.Redacted()
 }

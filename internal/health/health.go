@@ -135,16 +135,24 @@ func checkKeys(ctx context.Context, pool *pgxpool.Pool, tenantID string, configu
 	return healthy("all sealed epochs signed by known keys (%d key id(s))", len(ids))
 }
 
+// sealerStaleAfter is how old an unsealed event may get before the sealer
+// counts as stuck: many multiples of seal.DefaultInterval (5 s).
+const sealerStaleAfter = 2 * time.Minute
+
 func checkSealer(ctx context.Context, pool *pgxpool.Pool, tenantID string) dbruntime.ComponentHealth {
 	var epochs, events int64
-	var latest *time.Time
+	var latest, oldestUnsealed *time.Time
 	err := withTenant(ctx, pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		ew, ev := "", ""
+		ew, ev, eu := "", "", ` WHERE epoch_id IS NULL`
 		args := []any{}
 		if tenantID != "" {
 			ew = ` WHERE tenant_id = $1`
 			ev = ` WHERE tenant_id = $1`
+			eu = ` WHERE tenant_id = $1 AND epoch_id IS NULL`
 			args = append(args, tenantID)
+		}
+		if err := tx.QueryRow(ctx, `SELECT min(recorded_at) FROM audit_events`+eu, args...).Scan(&oldestUnsealed); err != nil {
+			return err
 		}
 		if err := tx.QueryRow(ctx, `SELECT count(*), max(sealed_at) FROM audit_epochs`+ew, args...).Scan(&epochs, &latest); err != nil {
 			return err
@@ -159,6 +167,13 @@ func checkSealer(ctx context.Context, pool *pgxpool.Pool, tenantID string) dbrun
 			return healthy("no audit activity to seal yet")
 		}
 		return unhealthy("%d audit event(s) but no sealed epoch — sealer not progressing", events)
+	}
+	// The sealer runs every few seconds, so an event left unsealed far
+	// longer than that means it has stopped (it used to exit on its first
+	// error while the server kept reporting healthy).
+	if oldestUnsealed != nil && time.Since(*oldestUnsealed) > sealerStaleAfter {
+		return unhealthy("oldest unsealed audit event is from %s — sealer not progressing",
+			oldestUnsealed.UTC().Format(time.RFC3339))
 	}
 	when := "unknown"
 	if latest != nil {
