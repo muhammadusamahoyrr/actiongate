@@ -21,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -112,7 +113,7 @@ func cmdCheck(ctx context.Context, args []string) int {
 	session := fs.String("session", "", "session uuid (required)")
 	requestID := fs.String("request-id", "", "native request id (required)")
 	tool := fs.String("tool", "", "tool name (required)")
-	paramsJSON := fs.String("params", "{}", "tool params as JSON object")
+	paramsJSON := fs.String("params", "{}", "tool params as JSON object, or - to read them from stdin")
 	env := fs.String("env", "default", "environment")
 	wait := fs.Duration("wait", 10*time.Minute, "how long to wait for a decision")
 	stateFlag := fs.String("state", "", "state file path")
@@ -123,8 +124,16 @@ func cmdCheck(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "check: -agent, -session, -request-id, and -tool are required")
 		return 1
 	}
+	rawParams := []byte(*paramsJSON)
+	if *paramsJSON == "-" {
+		var err error
+		if rawParams, err = io.ReadAll(os.Stdin); err != nil {
+			fmt.Fprintln(os.Stderr, "check: read params from stdin:", err)
+			return 1
+		}
+	}
 	var params map[string]any
-	if err := json.Unmarshal([]byte(*paramsJSON), &params); err != nil {
+	if err := json.Unmarshal(rawParams, &params); err != nil {
 		fmt.Fprintln(os.Stderr, "check: -params:", err)
 		return 1
 	}
@@ -139,7 +148,7 @@ func cmdCheck(ctx context.Context, args []string) int {
 		ToolName: *tool, Params: params, Environment: *env, Wait: *wait,
 	})
 	// Persist the pending receipt regardless of outcome shape.
-	if saveErr := gw.State.Save(path); saveErr != nil {
+	if saveErr := gw.State.SaveReceipts(path); saveErr != nil {
 		fmt.Fprintln(os.Stderr, "check: save state:", saveErr)
 	}
 	out, _ := json.Marshal(res)
@@ -185,7 +194,7 @@ func cmdReport(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "report:", err)
 		return 1
 	}
-	if err := gw.State.Save(path); err != nil {
+	if err := gw.State.SaveReceipts(path); err != nil {
 		fmt.Fprintln(os.Stderr, "report: save state:", err)
 	}
 	out, _ := json.Marshal(res)
@@ -224,7 +233,7 @@ func cmdMCP(ctx context.Context, args []string) int {
 	// given explicitly on the command line; running it is this command's job.
 	downstream := &mcp.CommandTransport{Command: exec.CommandContext(ctx, rest[0], rest[1:]...)}
 	err = proxy.Run(ctx, &mcp.StdioTransport{}, downstream)
-	if saveErr := gw.State.Save(path); saveErr != nil {
+	if saveErr := gw.State.SaveReceipts(path); saveErr != nil {
 		fmt.Fprintln(os.Stderr, "mcp: save state:", saveErr)
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {

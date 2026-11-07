@@ -363,7 +363,7 @@ func selfTest(ctx context.Context, gw *gateway.Gateway, statePath string) error 
 		Environment:     "default",
 		Wait:            15 * time.Second,
 	})
-	if saveErr := gw.State.Save(statePath); saveErr != nil {
+	if saveErr := gw.State.SaveReceipts(statePath); saveErr != nil {
 		return saveErr
 	}
 	switch {
@@ -371,7 +371,7 @@ func selfTest(ctx context.Context, gw *gateway.Gateway, statePath string) error 
 		if _, err := gw.Report(ctx, gateway.ReportInput{ActionID: res.ActionID, Status: "success"}); err != nil {
 			return fmt.Errorf("outcome report failed: %w", err)
 		}
-		return gw.State.Save(statePath)
+		return gw.State.SaveReceipts(statePath)
 	case errors.Is(err, gateway.ErrDenied):
 		fmt.Printf("  (self-test denied by rule %q — policy is enforcing, stack is healthy)\n", res.RuleID)
 		return nil

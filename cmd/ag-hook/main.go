@@ -154,9 +154,10 @@ func main() {
 		"-session", session,
 		"-request-id", uuid.NewString(),
 		"-tool", in.ToolName,
-		"-params", params,
+		"-params", "-", // on stdin: a Write of a large file exceeds the OS argument limit
 		"-wait", wait,
 	)
+	cmd.Stdin = strings.NewReader(params)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

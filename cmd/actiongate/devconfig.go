@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/muhammadusamahoyrr/actiongate/internal/fsutil"
 )
 
 // devConfig is the persisted local-development environment written by
@@ -101,11 +103,7 @@ func saveDevConfig(cfg *devConfig, path string) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("write dev config: %w", err)
-	}
-	return os.Rename(tmp, path)
+	return fsutil.WriteFileAtomic(path, raw, 0o600)
 }
 
 func (c *devConfig) seed(encoded string) ([]byte, error) {

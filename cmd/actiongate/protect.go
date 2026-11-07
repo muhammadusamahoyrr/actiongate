@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/admin"
+	"github.com/muhammadusamahoyrr/actiongate/internal/fsutil"
 	"github.com/muhammadusamahoyrr/actiongate/internal/gateway"
 	"github.com/muhammadusamahoyrr/actiongate/policies"
 )
@@ -263,11 +264,10 @@ func installHook(projectDir, command, matcher string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tmp := settingsPath + ".tmp"
-	if err := os.WriteFile(tmp, append(out, '\n'), 0o600); err != nil {
-		return "", err
-	}
-	return settingsPath, os.Rename(tmp, settingsPath)
+	// The settings file is the user's: keep its mode and, if it is a
+	// symlink (dotfiles repos), write through the link instead of
+	// replacing it.
+	return settingsPath, fsutil.UpdateFileAtomic(settingsPath, append(out, '\n'), 0o600)
 }
 
 func hookEntryIsOurs(entry any) bool {
