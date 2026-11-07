@@ -137,7 +137,7 @@ func Run(ctx context.Context, cfg Config) error {
 		_ = workerClient.Stop(stopCtx)
 	}()
 
-	sealer := &seal.Sealer{Pool: pool, Signer: epochSigner}
+	sealer := &seal.Sealer{Pool: pool, Signer: epochSigner, Logger: log}
 	go func() {
 		if err := sealer.Run(ctx, seal.DefaultInterval); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("sealer stopped", "error", err)
@@ -154,6 +154,10 @@ func Run(ctx context.Context, cfg Config) error {
 		Addr:              listen,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Gateways poll with short requests (no long-polling), so a request
+		// body that takes a minute is a stalled or hostile client.
+		ReadTimeout: 60 * time.Second,
+		IdleTimeout: 2 * time.Minute,
 	}
 	// #nosec G118 -- shutdown runs after ctx is already cancelled; the
 	// graceful-drain window must come from a fresh context.

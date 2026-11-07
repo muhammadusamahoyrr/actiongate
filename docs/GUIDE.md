@@ -64,8 +64,10 @@ Key terms you will see throughout this guide:
 
 ## 2. Installation
 
-**Prerequisites:** Docker Desktop (actiongate manages PostgreSQL for you —
-or point it at any existing PostgreSQL 16+ with `actiongate up -db-url`).
+**Prerequisites:** none. actiongate runs its own embedded PostgreSQL (no
+Docker); the first `actiongate up` downloads the PostgreSQL binaries once, so
+it needs internet access that first time. Or point it at any existing
+PostgreSQL 16+ with `actiongate up -db-url`.
 
 ### Option A — release binaries (recommended)
 
@@ -293,7 +295,7 @@ actiongate service install    # from an elevated terminal, once
 
 After that the control plane starts automatically after every reboot
 (delayed start), restarts itself on failure, waits patiently for
-Docker/Postgres to come up, and logs to `%APPDATA%\actiongate\service.log`.
+Postgres to come up, and logs to `%APPDATA%\actiongate\service.log`.
 
 ```powershell
 actiongate service status     # health check — no elevation needed
@@ -418,8 +420,11 @@ inherit your shell environment — put the Slack settings in
 
 ```powershell
 actiongate service uninstall            # remove the Windows service (elevated)
-docker rm -f actiongate-db              # remove the database container
 ```
+
+The embedded database lives in `%APPDATA%\actiongate\pgdata` (deleted with
+the folder below), and the downloaded PostgreSQL binaries are cached in
+`%LOCALAPPDATA%\actiongate\` — delete that folder too to reclaim the space.
 
 Then, per protected project, remove the `ag-hook` entries from
 `.claude/settings.local.json` (a `.bak` backup of your pre-actiongate

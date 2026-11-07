@@ -57,7 +57,7 @@ func cmdUp(args []string) int {
 			}
 		}
 		if err := pingOnce(ctx, cfg.DatabaseURL); err != nil {
-			fmt.Fprintln(os.Stderr, "up: postgres:", fmt.Errorf("cannot reach external database %s: %w", cfg.DatabaseURL, err))
+			fmt.Fprintln(os.Stderr, "up: postgres:", fmt.Errorf("cannot reach external database %s: %w", redactURL(cfg.DatabaseURL), err))
 			return 1
 		}
 		fmt.Println("• postgres: ready (external)")
@@ -139,12 +139,13 @@ actiongate is up.
   Next step — protect a project (run inside the project directory):
       actiongate protect claude-code
 
-  Verify the audit trail any time:
-      verify -database-url "%s" -tenant %s -key epoch-1=%s
+  Verify the audit trail any time (AG_DATABASE_URL = "database_url" in
+  %s; it holds the database password, so it is not printed here):
+      verify -tenant %s -key epoch-1=%s
 
   Approvals: without Slack configured, pending actions are approved via
   POST %s/approval/callback (see README "Try it", step 6).
-%s`, cfg.DatabaseURL, cfg.TenantID, epochPub, cfg.ServerURL, serviceHint())
+%s`, cfgPath, cfg.TenantID, epochPub, cfg.ServerURL, serviceHint())
 
 	if alreadyRunning {
 		return 0

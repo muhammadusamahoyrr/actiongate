@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -75,11 +76,16 @@ func run() error {
 // seedFromConfig decodes a base64 32-byte seed, or generates an ephemeral
 // one with a loud warning — fine for development, wrong for production,
 // where restarts would orphan every outstanding grant and sealed epoch.
+// The seed itself is never logged: anyone holding it could forge grants
+// and re-sign the audit chain. Only the public key is shown.
 func seedFromConfig(encoded, name string) ([]byte, error) {
 	if encoded != "" {
 		seed, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
 			return nil, fmt.Errorf("%s key seed: %w", name, err)
+		}
+		if len(seed) != ed25519.SeedSize {
+			return nil, fmt.Errorf("%s key seed: want %d bytes, got %d", name, ed25519.SeedSize, len(seed))
 		}
 		return seed, nil
 	}
@@ -87,7 +93,8 @@ func seedFromConfig(encoded, name string) ([]byte, error) {
 	if _, err := rand.Read(seed); err != nil {
 		return nil, fmt.Errorf("randomness: %w", err)
 	}
+	pub := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
 	slog.Warn("ephemeral signing key generated — set the seed to survive restarts",
-		"key", name, "seed_b64", base64.StdEncoding.EncodeToString(seed))
+		"key", name, "public_key_b64", base64.StdEncoding.EncodeToString(pub))
 	return seed, nil
 }

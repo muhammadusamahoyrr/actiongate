@@ -86,7 +86,7 @@ func runTamperDemo(ctx context.Context, baseURL string, keep bool) error {
 	}
 	dropIt := func() {
 		if keep {
-			fmt.Printf("\n(scratch database kept: %s)\n", demoURL)
+			fmt.Printf("\n(scratch database kept: %s)\n", redactURL(demoURL))
 			return
 		}
 		if _, err := admin.Exec(context.Background(), `drop database if exists `+tamperDemoDB+` with (force)`); err == nil {

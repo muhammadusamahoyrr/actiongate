@@ -26,6 +26,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,6 +41,13 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/gateway"
+)
+
+const (
+	// maxWait + checkSlack must stay below the hook timeout that
+	// `actiongate protect` installs (hookTimeoutSecs = 360).
+	maxWait    = 5*time.Minute + 15*time.Second
+	checkSlack = 30 * time.Second
 )
 
 type hookInput struct {
@@ -137,19 +145,29 @@ func main() {
 		params = "{}"
 	}
 
-	wait := envOr("AG_HOOK_WAIT", "5m")
-	if _, err := time.ParseDuration(wait); err != nil {
-		wait = "5m"
+	// Claude Code kills a hook that outlives its timeout (360s, set by
+	// `actiongate protect`), and a killed hook does NOT block the tool call.
+	// So the approval wait is capped below that, and the gateway gets a hard
+	// deadline: running out of time must end in exit 2, never in a kill.
+	waitDur, err := time.ParseDuration(envOr("AG_HOOK_WAIT", "5m"))
+	if err != nil || waitDur <= 0 {
+		waitDur = 5 * time.Minute
 	}
+	if waitDur > maxWait {
+		waitDur = maxWait
+	}
+	wait := waitDur.String()
 	gw, err := gatewayPath()
 	if err != nil {
 		block("actiongate: cannot locate gateway; failing closed")
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), waitDur+checkSlack)
+	defer cancel()
 	// #nosec G204 -- gw is the sibling gateway binary (or the operator's
 	// explicit AG_HOOK_GATEWAY override); invoking it is this bridge's
 	// entire purpose.
-	cmd := exec.Command(gw, "check",
+	cmd := exec.CommandContext(ctx, gw, "check",
 		"-agent", envOr("AG_HOOK_AGENT", "claude-code"),
 		"-session", session,
 		"-request-id", uuid.NewString(),
@@ -167,6 +185,9 @@ func main() {
 	var res checkResult
 	_ = json.Unmarshal(stdout.Bytes(), &res)
 
+	if ctx.Err() != nil {
+		block("actiongate: control-plane check timed out; failing closed")
+	}
 	code := 0
 	if ee, ok := runErr.(*exec.ExitError); ok {
 		code = ee.ExitCode()

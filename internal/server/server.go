@@ -62,12 +62,20 @@ func (s *Server) now() time.Time {
 	return time.Now()
 }
 
+const (
+	maxRPCBytes      = 16 << 20 // largest accepted RPC message
+	maxCallbackBytes = 64 << 10 // approval callback body
+)
+
 // Handler returns the http.Handler for the full surface: the ConnectRPC
 // service plus the approval callback endpoint.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	path, h := actiongatev1connect.NewControlPlaneServiceHandler(s,
-		connect.WithInterceptors(s.authInterceptor()))
+		connect.WithInterceptors(s.authInterceptor()),
+		// Enroll is unauthenticated, and tool params carry whole file
+		// bodies for Write: bound them instead of reading without limit.
+		connect.WithReadMaxBytes(maxRPCBytes))
 	mux.Handle(path, h)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /approval/callback", s.handleApprovalCallback)
@@ -405,7 +413,9 @@ func (s *Server) handleApprovalCallback(w http.ResponseWriter, r *http.Request) 
 		ApproverID string `json:"approver_id"`
 		Reason     string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// The token is checked only after decoding, so bound what an
+	// unauthenticated caller can make us read.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCallbackBytes)).Decode(&body); err != nil {
 		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
 		return
 	}

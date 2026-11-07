@@ -155,7 +155,7 @@ Policies are compiled before they are saved, so a broken rule is rejected at set
 - **Any hook-based agent:** `gateway check` exits `0` allowed, `2` denied, `3` timeout.
 - **Windows service:** `actiongate service install` keeps protection running across reboots.
 - **Health report:** `actiongate doctor` checks the database, schema, tenant, keys, sealer and control plane.
-- **Embedded PostgreSQL 18** with backup/restore and safe upgrades. Or point `-db-url` at your own PostgreSQL 18+.
+- **Embedded PostgreSQL 18**, no Docker: downloaded once on the first `actiongate up`. Or point `-db-url` at your own PostgreSQL 18+.
 - **Claude Code plugin** with `/actiongate:protect`, `/actiongate:status` and `/actiongate:tamper-demo`.
 
 ---
@@ -165,8 +165,8 @@ Policies are compiled before they are saved, so a broken rule is rejected at set
 Go · PostgreSQL (row-level security, append-only triggers) · pgx + sqlc · River · cel-go · mvdan/sh · ConnectRPC + Protobuf · Ed25519 · MCP Go SDK · Slack · Testcontainers
 
 ```bash
-make test   # full suite against real PostgreSQL, with -race
-make lint   # buf lint + breaking-change check
+make test   # full suite against real PostgreSQL (Docker), with -race
+make lint   # golangci-lint + buf lint + buf breaking-change check
 ```
 
 Code layout: `cmd/` has five binaries (`actiongate`, `controlplane`, `gateway`, `ag-hook`, `verify`) plus the `agbench` evaluation tool. `internal/` holds the policy engine, the shell analyzer (`internal/facts`), approvals, grants, queue workers, sealer and MCP proxy. Database migrations are in `migrations/` and the wire contract is in `proto/`.

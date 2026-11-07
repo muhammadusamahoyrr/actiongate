@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -149,4 +150,13 @@ func randomB64(n int) string {
 		panic(fmt.Sprintf("randomness unavailable: %v", err))
 	}
 	return base64.StdEncoding.EncodeToString(buf)
+}
+
+// redactURL hides the password in a database URL before it is printed.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(unparseable database URL)"
+	}
+	return u.Redacted()
 }

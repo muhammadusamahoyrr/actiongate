@@ -40,9 +40,9 @@ func ClassifyCluster(dataPath string) ClusterState {
 
 // ClusterError signals that an existing cluster could not be started — for
 // example WAL crash recovery could not complete. The runtime never
-// reinitializes in this case (that would destroy the audit history); recovery
-// is via `actiongate restore`. This is the Step 4 "WAL-recovery-failed ≠
-// no-cluster" guarantee.
+// reinitializes in this case (that would destroy the audit history); the
+// operator recovers the data directory by hand (there is no restore command
+// yet). This is the Step 4 "WAL-recovery-failed ≠ no-cluster" guarantee.
 type ClusterError struct {
 	Path string
 	Err  error
@@ -50,7 +50,8 @@ type ClusterError struct {
 
 func (e *ClusterError) Error() string {
 	return fmt.Sprintf("dbruntime: existing cluster at %s failed to start and was NOT reinitialized; "+
-		"recover with `actiongate restore`: %v", e.Path, e.Err)
+		"check postgres.log next to it, and keep a copy of the directory before changing anything "+
+		"(moving it aside makes the next start create a new, empty database): %v", e.Path, e.Err)
 }
 
 func (e *ClusterError) Unwrap() error { return e.Err }
