@@ -295,7 +295,18 @@ actiongate service install    # from an elevated terminal, once
 
 After that the control plane starts automatically after every reboot
 (delayed start), restarts itself on failure, waits patiently for
-Postgres to come up, and logs to `%APPDATA%\actiongate\service.log`.
+Postgres to come up, and logs to `%APPDATA%\actiongate\service.log`. The log
+rotates at 10 MB, and `actiongate service status` shows what the service
+is waiting for when the control plane is down.
+
+> **Known issue: do not install the service on a machine that other people
+> log into.** The service runs as LocalSystem but keeps its files in the
+> installing user's `%APPDATA%\actiongate`, which that user can change.
+> actiongate refuses links and junctions there, but path checks cannot
+> fully stop a local user from steering a SYSTEM process's file writes.
+> Running the service as the installing user is planned. On a laptop whose
+> only user is already an administrator, this gives nothing away, because
+> that user already controls the machine.
 
 ```powershell
 actiongate service status     # health check — no elevation needed
