@@ -178,7 +178,7 @@ Policies are compiled before they are saved, so a broken rule is rejected at set
 - **Slack approvals** with Approve/Deny buttons. Clicks are signature-verified and recorded with the approver's identity.
 - **Any MCP agent:** wrap its server command as `gateway mcp -- <your server>`.
 - **Any hook-based agent:** `gateway check` exits `0` allowed, `2` denied, `3` timeout.
-- **Windows service:** `actiongate service install` keeps protection running across reboots.
+- **Starts at sign-in on Windows:** `actiongate service install` (no admin needed) keeps protection running across reboots.
 - **Health report:** `actiongate doctor` checks the database, schema, tenant, keys, sealer and control plane.
 - **Embedded PostgreSQL 18**, no Docker: downloaded once on the first `actiongate up`. Or point `-db-url` at your own PostgreSQL 18+.
 - **Claude Code plugin** with `/actiongate:protect`, `/actiongate:status` and `/actiongate:tamper-demo`.

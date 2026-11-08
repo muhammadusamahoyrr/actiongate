@@ -21,11 +21,14 @@ import (
 	"github.com/muhammadusamahoyrr/actiongate/internal/dbruntime"
 )
 
+// serviceName is the Windows service older versions installed (as
+// LocalSystem). It is still recognised so it can be found and removed.
 const serviceName = "actiongate"
 
-// cmdService manages the control plane as a Windows service so the stack
-// survives reboots unattended — while it is down, hooked projects fail
-// closed, which makes auto-restart a correctness property, not polish.
+// cmdService keeps the control plane running in the background so it
+// survives reboots: while it is down, hooked projects fail closed, which
+// makes auto-start a correctness property, not polish. On Windows it is a
+// sign-in task (see service_task_windows.go), not a Windows service.
 func cmdService(args []string) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: actiongate service <install|uninstall|start|stop|status|run>")
@@ -36,8 +39,10 @@ func cmdService(args []string) int {
 		return serviceInstall()
 	case "uninstall":
 		return serviceUninstall()
-	case "start", "stop":
-		return serviceControl(args[0])
+	case "start":
+		return serviceStart()
+	case "stop":
+		return serviceStop()
 	case "status":
 		return serviceStatus()
 	case "run":
@@ -48,13 +53,8 @@ func cmdService(args []string) int {
 	}
 }
 
-func connectSCM() (*mgr.Mgr, error) {
-	m, err := mgr.Connect()
-	if err != nil {
-		return nil, fmt.Errorf("cannot open the service manager (run this from an elevated terminal): %w", err)
-	}
-	return m, nil
-}
+const legacyServiceHelp = "an older actiongate Windows service is installed (it runs as LocalSystem).\n" +
+	"  Remove it from an elevated terminal with `actiongate service uninstall`, then install again."
 
 func serviceInstall() int {
 	exe, err := os.Executable()
@@ -68,75 +68,105 @@ func serviceInstall() int {
 		fmt.Fprintln(os.Stderr, "service:", err)
 		return 1
 	}
-	if _, err := loadDevConfigAt(cfgPath); err != nil {
-		fmt.Fprintln(os.Stderr, "service:", err)
-		return 1
-	}
-
-	m, err := connectSCM()
+	cfg, err := loadDevConfigAt(cfgPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "service:", err)
 		return 1
 	}
-	defer func() { _ = m.Disconnect() }()
-
-	if s, err := m.OpenService(serviceName); err == nil {
-		_ = s.Close()
-		fmt.Fprintf(os.Stderr, "service: %q is already installed — `actiongate service uninstall` first to change it\n", serviceName)
+	if legacyServiceInstalled() {
+		fmt.Fprintln(os.Stderr, "service:", legacyServiceHelp)
 		return 1
 	}
-
-	// Delayed auto-start: the database rides Docker Desktop, which itself
-	// only appears around user login — no point racing it at boot.
-	s, err := m.CreateService(serviceName, exe, mgr.Config{
-		StartType:        mgr.StartAutomatic,
-		DelayedAutoStart: true,
-		DisplayName:      "actiongate control plane",
-		Description:      "Action firewall for AI coding agents: policy decisions, human approvals, and the sealed audit log. While this service is down, protected projects fail closed.",
-	}, "service", "run", "-config", cfgPath)
+	if taskInstalled() {
+		fmt.Fprintf(os.Stderr, "service: already installed — `actiongate service uninstall` first to change it\n")
+		return 1
+	}
+	if healthy(context.Background(), cfg.ServerURL) {
+		fmt.Fprintf(os.Stderr, "service: a control plane is already answering at %s (an `actiongate up` window?).\n"+
+			"  Stop it with Ctrl+C first, then install again.\n", cfg.ServerURL)
+		return 1
+	}
+	account, err := currentAccount()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "service: create:", err)
+		fmt.Fprintln(os.Stderr, "service:", err)
 		return 1
 	}
-	defer func() { _ = s.Close() }()
-
-	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
-		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
-	}, 86400); err != nil {
-		fmt.Fprintln(os.Stderr, "service: recovery actions:", err)
+	if err := createTask(account, exe, cfgPath); err != nil {
+		fmt.Fprintln(os.Stderr, "service: create task:", err)
 		return 1
 	}
-	if err := s.Start(); err != nil {
+	if _, err := schtasks("/Run", "/TN", taskName); err != nil {
 		fmt.Fprintf(os.Stderr, "service: installed but failed to start: %v\n", err)
 		return 1
 	}
-	fmt.Printf(`service %q installed and started.
+	fmt.Print("installed; waiting for the control plane")
+	up := waitForControlPlane(cfg.ServerURL, 90*time.Second)
+	fmt.Println()
+	if !up {
+		fmt.Fprintln(os.Stderr, "service: installed and started, but the control plane is not answering yet.\n"+
+			"  Check `actiongate service status`.")
+		return 1
+	}
+	fmt.Printf(`actiongate runs in the background as %s (not as SYSTEM, no password needed).
 
   config: %s
   log:    %s
-  It starts automatically after every reboot (delayed) and restarts itself
-  on failure. Keep Docker Desktop's "start when you log in" enabled — the
-  service waits patiently for the database while Docker comes up.
+  It starts by itself each time you sign in to Windows and restarts if it
+  crashes. It runs only while you are signed in, which is when agents run.
 
   status:    actiongate service status
-  uninstall: actiongate service uninstall   (elevated)
-`, serviceName, cfgPath, serviceLogPath(cfgPath))
+  stop/start: actiongate service stop | start
+  uninstall: actiongate service uninstall
+`, account, cfgPath, serviceLogPath(cfgPath))
 	return 0
 }
 
+func waitForControlPlane(serverURL string, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if healthy(context.Background(), serverURL) {
+			return true
+		}
+		fmt.Print(".")
+		time.Sleep(2 * time.Second)
+	}
+	return false
+}
+
 func serviceUninstall() int {
-	m, err := connectSCM()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "service:", err)
+	removed := false
+	if taskInstalled() {
+		_ = stopTask()
+		if _, err := schtasks("/Delete", "/TN", taskName, "/F"); err != nil {
+			fmt.Fprintln(os.Stderr, "service:", err)
+			return 1
+		}
+		removed = true
+	}
+	if legacyServiceInstalled() {
+		if err := removeLegacyService(); err != nil {
+			fmt.Fprintln(os.Stderr, "service: the older actiongate Windows service is still installed:", err)
+			return 1
+		}
+		removed = true
+	}
+	if !removed {
+		fmt.Fprintln(os.Stderr, "service: not installed")
 		return 1
+	}
+	fmt.Println("removed. Run the stack manually with `actiongate up`.")
+	return 0
+}
+
+func removeLegacyService() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("run this from an elevated terminal to remove it: %w", err)
 	}
 	defer func() { _ = m.Disconnect() }()
 	s, err := m.OpenService(serviceName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "service: %q is not installed\n", serviceName)
-		return 1
+		return err
 	}
 	defer func() { _ = s.Close() }()
 	if status, err := s.Control(svc.Stop); err == nil {
@@ -145,74 +175,101 @@ func serviceUninstall() int {
 			status, _ = s.Query()
 		}
 	}
-	if err := s.Delete(); err != nil {
-		fmt.Fprintln(os.Stderr, "service: delete:", err)
-		return 1
-	}
-	fmt.Printf("service %q removed. Run the stack manually with `actiongate up`.\n", serviceName)
-	return 0
+	return s.Delete()
 }
 
-func serviceControl(verb string) int {
-	m, err := connectSCM()
-	if err != nil {
+func serviceStart() int {
+	if !taskInstalled() {
+		fmt.Fprintln(os.Stderr, "service: not installed — `actiongate service install`")
+		return 1
+	}
+	if _, err := schtasks("/Run", "/TN", taskName); err != nil {
 		fmt.Fprintln(os.Stderr, "service:", err)
 		return 1
 	}
-	defer func() { _ = m.Disconnect() }()
-	s, err := m.OpenService(serviceName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "service: %q is not installed — `actiongate service install` (elevated)\n", serviceName)
-		return 1
-	}
-	defer func() { _ = s.Close() }()
-	if verb == "start" {
-		if err := s.Start(); err != nil {
-			fmt.Fprintln(os.Stderr, "service: start:", err)
-			return 1
-		}
-		fmt.Println("started")
-		return 0
-	}
-	if _, err := s.Control(svc.Stop); err != nil {
-		fmt.Fprintln(os.Stderr, "service: stop:", err)
-		return 1
-	}
-	fmt.Println("stopping")
+	fmt.Println("started")
 	return 0
 }
 
-// serviceStatus works without elevation: it reports via `sc query` first
-// and falls back to the HTTP health endpoint, which is the truth that
-// matters to hooks anyway.
-func serviceStatus() int {
-	out, err := exec.Command("sc", "query", serviceName).CombinedOutput()
+func serviceStop() int {
+	if !taskInstalled() {
+		fmt.Fprintln(os.Stderr, "service: not installed")
+		return 1
+	}
+	if err := stopTask(); err != nil {
+		fmt.Fprintln(os.Stderr, "service:", err)
+		return 1
+	}
+	fmt.Println("stopped")
+	return 0
+}
+
+// stopTask asks the running task to shut down cleanly (so it also stops
+// the embedded PostgreSQL) and waits for it. Only if it does not stop in
+// time is the task ended by force.
+func stopTask() error {
+	cfgPath, err := devConfigPath()
 	if err != nil {
-		fmt.Printf("service: not installed (%s)\n", serviceName)
-	} else {
-		fmt.Print(string(out))
+		return err
+	}
+	if st, err := readServiceState(cfgPath); err != nil || st.Phase == "stopped" {
+		return nil // not running
+	}
+	asked := time.Now()
+	if err := requestServiceStop(cfgPath); err != nil {
+		return fmt.Errorf("request stop: %w", err)
+	}
+	for time.Since(asked) < 60*time.Second {
+		if st, err := readServiceState(cfgPath); err == nil && st.Phase == "stopped" && st.UpdatedAt.After(asked.Add(-time.Second)) {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	_ = os.Remove(serviceStopPath(cfgPath))
+	if _, err := schtasks("/End", "/TN", taskName); err != nil {
+		return err
+	}
+	return fmt.Errorf("did not stop within 60 s and was ended by force; the database may still be running (`actiongate up` reuses it)")
+}
+
+// serviceStatus needs no elevation.
+func serviceStatus() int {
+	switch {
+	case taskInstalled():
+		fmt.Printf("background task %q: installed (starts at sign-in)\n", taskName)
+	case legacyServiceInstalled():
+		fmt.Println("WARNING:", legacyServiceHelp)
+	default:
+		fmt.Println("background task: not installed (`actiongate service install`)")
 	}
 	cfgPath, err := devConfigPath()
-	if err == nil {
-		if cfg, err := loadDevConfigAt(cfgPath); err == nil {
-			if healthy(context.Background(), cfg.ServerURL) {
-				fmt.Printf("control plane at %s: healthy\n", cfg.ServerURL)
-				return 0
-			}
-			fmt.Printf("control plane at %s: NOT answering — hooked projects fail closed\n", cfg.ServerURL)
-			return 1
-		}
+	if err != nil {
+		return 1
+	}
+	cfg, err := loadDevConfigAt(cfgPath)
+	if err != nil {
+		return 1
+	}
+	if healthy(context.Background(), cfg.ServerURL) {
+		fmt.Printf("control plane at %s: healthy\n", cfg.ServerURL)
+		return 0
+	}
+	fmt.Printf("control plane at %s: NOT answering — hooked projects fail closed\n", cfg.ServerURL)
+	if st, err := readServiceState(cfgPath); err == nil {
+		fmt.Println(st.describe())
 	}
 	return 1
 }
 
-// serviceRun is the service entry point (invoked by the SCM with the
-// installing user's config path). -debug runs the identical loop in the
-// console for testing without an installed service.
+// serviceRun is the background entry point: the sign-in task runs it, and
+// so does a Windows service left by an older version. -debug runs the same
+// loop in the console.
 func serviceRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	cfgFlag := fs.String("config", "", "dev config path (required)")
-	debugFlag := fs.Bool("debug", false, "run in the console instead of under the SCM")
+	debugFlag := fs.Bool("debug", false, "log to the console instead of service.log")
+	workerFlag := fs.Bool("worker", false, "internal: run the control plane under the supervisor")
+	adoptFlag := fs.Bool("adopt-db", false, "internal: take over a database left running by a crashed worker")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -226,6 +283,11 @@ func serviceRun(args []string) int {
 		cfgPath = p
 	}
 
+	isSvc, _ := svc.IsWindowsService()
+	if !isSvc && !*debugFlag && !*workerFlag {
+		return superviseWorker(cfgPath)
+	}
+
 	log, closeLog, err := serviceLogger(cfgPath, *debugFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "service run:", err)
@@ -233,18 +295,96 @@ func serviceRun(args []string) int {
 	}
 	defer closeLog()
 
-	if *debugFlag {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		serveResilient(ctx, cfgPath, log)
+	if isSvc {
+		// An older install: a Windows service running as LocalSystem.
+		log.Warn("running as an older LocalSystem Windows service; reinstall with `actiongate service uninstall` (elevated) then `install`")
+		if err := svc.Run(serviceName, &agService{cfgPath: cfgPath, log: log}); err != nil {
+			log.Error("service run failed", "error", err)
+			return 1
+		}
 		return 0
 	}
 
-	if err := svc.Run(serviceName, &agService{cfgPath: cfgPath, log: log}); err != nil {
-		log.Error("service run failed", "error", err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go watchStopRequest(ctx, cfgPath, time.Second, cancel)
+	serveResilient(ctx, cfgPath, log, *adoptFlag)
+	return 0
+}
+
+// superviseWorker is what the sign-in task runs. It starts the control
+// plane as a child process and restarts it if it exits with an error, so a
+// crash (a panic, say) does not leave protection down until the next
+// sign-in. Task Scheduler cannot do this: the database processes keep the
+// task's hidden console alive, so it never sees the crash. A worker that
+// exits cleanly was asked to stop, and the supervisor stops with it.
+func superviseWorker(cfgPath string) int {
+	logFile, err := openRotatingFile(supervisorLogPath(cfgPath), 1<<20)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "service run:", err)
 		return 1
 	}
-	return 0
+	defer func() { _ = logFile.Close() }()
+	log := slog.New(slog.NewTextHandler(logFile, nil))
+
+	exe, err := os.Executable()
+	if err != nil {
+		log.Error("cannot find own executable", "error", err)
+		return 1
+	}
+	retry := newRetrier(2*time.Second, 5*time.Minute, 10*time.Minute)
+	adopt := false
+	for {
+		args := []string{"service", "run", "-config", cfgPath, "-worker"}
+		if adopt {
+			args = append(args, "-adopt-db")
+		}
+		started := time.Now()
+		// #nosec G204 -- our own executable with our own arguments.
+		err := exec.Command(exe, args...).Run()
+		if err == nil {
+			log.Info("control plane stopped")
+			return 0
+		}
+		if time.Since(started) > 10*time.Minute {
+			retry.reset() // it ran fine for a while; this is a fresh failure
+		}
+		delay, suppressed := retry.fail(err)
+		if suppressed >= 0 {
+			log.Error("control plane exited unexpectedly; restarting", "error", err, "retry_in", delay.String())
+		}
+		writeServiceState(cfgPath, serviceState{Phase: "restarting", Error: "worker exited: " + err.Error(), NextRetry: time.Now().Add(delay)})
+		if stopRequestedWithin(cfgPath, delay) {
+			log.Info("stop requested while restarting")
+			writeServiceState(cfgPath, serviceState{Phase: "stopped"})
+			return 0
+		}
+		// The crashed worker may have left the database running. The next
+		// one takes it over, so a later `service stop` still stops it.
+		adopt = true
+	}
+}
+
+func supervisorLogPath(cfgPath string) string {
+	return filepath.Join(filepath.Dir(cfgPath), "service-supervisor.log")
+}
+
+// stopRequestedWithin waits up to d and reports (and consumes) a stop
+// request that arrives in that time.
+func stopRequestedWithin(cfgPath string, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if _, err := os.Lstat(serviceStopPath(cfgPath)); err == nil {
+			_ = os.Remove(serviceStopPath(cfgPath))
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 type agService struct {
@@ -259,7 +399,7 @@ func (s *agService) Execute(_ []string, requests <-chan svc.ChangeRequest, statu
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		serveResilient(ctx, s.cfgPath, s.log)
+		serveResilient(ctx, s.cfgPath, s.log, false)
 	}()
 	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 
@@ -284,16 +424,20 @@ func (s *agService) Execute(_ []string, requests <-chan svc.ChangeRequest, statu
 	}
 }
 
-// serviceHint tells `up` whether to nudge the user toward reboot-proofing.
+// serviceHint tells `up` whether to suggest starting at sign-in.
 func serviceHint() string {
-	if err := exec.Command("sc", "query", serviceName).Run(); err == nil {
+	if taskInstalled() || legacyServiceInstalled() {
 		return ""
 	}
 	return `
-  Survive reboots (recommended, once, from an elevated terminal):
+  Start automatically at every sign-in (recommended, once, no admin needed):
       actiongate service install
 `
 }
+
+// serviceLogMaxBytes caps service.log; one rotated copy (service.log.1) is
+// kept, so the log never uses more than about 20 MB.
+const serviceLogMaxBytes = 10 << 20
 
 func serviceLogPath(cfgPath string) string {
 	return filepath.Join(filepath.Dir(cfgPath), "service.log")
@@ -303,7 +447,7 @@ func serviceLogger(cfgPath string, debug bool) (*slog.Logger, func(), error) {
 	if debug {
 		return slog.New(slog.NewTextHandler(os.Stderr, nil)), func() {}, nil
 	}
-	f, err := os.OpenFile(serviceLogPath(cfgPath), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := openRotatingFile(serviceLogPath(cfgPath), serviceLogMaxBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open service log: %w", err)
 	}
@@ -311,10 +455,12 @@ func serviceLogger(cfgPath string, debug bool) (*slog.Logger, func(), error) {
 }
 
 // serveResilient keeps the control plane alive until ctx is cancelled:
-// wait for config and database (retrying forever — at boot, Docker Desktop
-// arrives whenever the user logs in), migrate, ensure the tenant, serve;
-// on any failure, log and start over. Nothing here ever gives up.
-func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger) {
+// wait for config and the database, migrate, ensure the tenant, serve; on
+// any failure, start over. It never gives up, but it backs off (10 s up to
+// 5 min), logs a repeating error only every 10 min, and records what it is
+// waiting for in service-status.json for `actiongate service status`.
+// (Before, it logged the same error every 10 s forever: 130 MB in a day.)
+func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger, adopt bool) {
 	var rt *dbruntime.Embedded
 	defer func() {
 		if rt != nil {
@@ -323,11 +469,26 @@ func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger) {
 			_ = rt.Stop(stopCtx, dbruntime.ShutdownFast)
 		}
 	}()
+	retry := newRetrier(10*time.Second, 5*time.Minute, 10*time.Minute)
+	// wait logs (when due) and records a failed step, then sleeps.
+	wait := func(phase, msg string, err error) {
+		delay, suppressed := retry.fail(err)
+		if suppressed >= 0 {
+			args := []any{"error", err, "retry_in", delay.String()}
+			if suppressed > 0 {
+				args = append(args, "repeats_since_last_log", suppressed)
+			}
+			log.Warn(msg, args...)
+		}
+		writeServiceState(cfgPath, serviceState{Phase: phase, Error: err.Error(), NextRetry: time.Now().Add(delay)})
+		sleepCtx(ctx, delay)
+	}
+	defer writeServiceState(cfgPath, serviceState{Phase: "stopped"})
+
 	for ctx.Err() == nil {
 		cfg, err := loadDevConfigAt(cfgPath)
 		if err != nil {
-			log.Warn("config not ready", "path", cfgPath, "error", err)
-			sleepCtx(ctx, 30*time.Second)
+			wait("waiting_for_config", "config not ready", err)
 			continue
 		}
 		if rt == nil {
@@ -337,27 +498,33 @@ func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger) {
 			r, err := startManagedDB(ctx, cfg, cfgPath)
 			if err != nil {
 				if ctx.Err() == nil {
-					log.Warn("database not ready, waiting", "error", err)
-					sleepCtx(ctx, 10*time.Second)
+					wait("waiting_for_database", "database not ready, waiting", err)
 				}
 				continue
+			}
+			if r == nil && adopt {
+				// Left running by the worker that crashed: make it ours.
+				if r, err = newManagedDB(cfg, cfgPath); err == nil {
+					r.Adopt()
+					log.Info("took over the database left running by the previous worker")
+				}
+				adopt = false
 			}
 			rt = r
 		}
 		if err := migrate(ctx, cfg.DatabaseURL); err != nil {
-			log.Error("migrate failed", "error", err)
-			sleepCtx(ctx, 10*time.Second)
+			wait("migrating", "migrate failed", err)
 			continue
 		}
 		if err := ensureTenantResilient(ctx, cfg, cfgPath); err != nil {
-			log.Error("tenant provisioning failed", "error", err)
-			sleepCtx(ctx, 10*time.Second)
+			wait("migrating", "tenant provisioning failed", err)
 			continue
 		}
+		retry.reset()
 		log.Info("starting control plane", "listen", cfg.Listen)
+		writeServiceState(cfgPath, serviceState{Phase: "serving"})
 		if err := runControlPlane(ctx, cfg, log); err != nil && ctx.Err() == nil {
-			log.Error("control plane exited, restarting", "error", err)
-			sleepCtx(ctx, 5*time.Second)
+			wait("restarting", "control plane exited, restarting", err)
 		}
 	}
 }

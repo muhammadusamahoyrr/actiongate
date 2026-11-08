@@ -287,25 +287,42 @@ chain is never touched.
 
 ## 8. Running unattended
 
-### Windows service
+### Windows: start at sign-in
 
 ```powershell
-actiongate service install    # from an elevated terminal, once
+actiongate service install    # once, from a normal terminal (no admin needed)
 ```
 
-After that the control plane starts automatically after every reboot
-(delayed start), restarts itself on failure, waits patiently for
-Postgres to come up, and logs to `%APPDATA%\actiongate\service.log`.
+This registers a Task Scheduler task that starts the control plane, hidden,
+each time you sign in to Windows. It restarts it if it crashes, waits
+patiently for Postgres to come up, and logs to
+`%APPDATA%\actiongate\service.log`. The log rotates at 10 MB, and
+`actiongate service status` shows what it is waiting for when the control
+plane is down.
 
 ```powershell
-actiongate service status     # health check — no elevation needed
-actiongate service stop|start # manage it
+actiongate service status     # health check
+actiongate service stop|start # stop cleanly (database included) / start
 actiongate service uninstall  # remove it
 ```
 
-A useful side effect of running as a service: a governed agent running as
-your user **cannot kill the firewall** — stopping the service requires
-elevation.
+**It runs as you, not as SYSTEM, and needs no password.** Its files are in
+your `%APPDATA%\actiongate`, which you can change, and a SYSTEM process
+writing there could be tricked by links into overwriting system files. A
+sign-in task runs with exactly your rights, so there is nothing to gain. It
+runs only while you are signed in, which is when agents run. It needs
+Windows 10 1809 or later (for `conhost --headless`).
+
+**Trade-off.** Because it runs as you, anything running as you can stop it,
+including a governed agent through a shell command. That does not open the
+gate: while the control plane is down, the hook fails closed and every
+governed tool call is blocked. But an agent could stop work that way.
+Governed `Bash` calls go through policy like any other action.
+
+Older versions installed a Windows service running as LocalSystem.
+`actiongate service status` warns about one. Remove it with
+`actiongate service uninstall` from an elevated terminal, then install
+again.
 
 ### Linux / macOS
 
@@ -372,7 +389,7 @@ the signed outcome receipt.
 |---|---|
 | `%APPDATA%\actiongate\dev.json` (Windows) / user config dir | Environment managed by `actiongate up` / the service: DB URL, token secret, key seeds, tenant ID. File mode 0600. |
 | `%APPDATA%\actiongate\gateway.json` | Gateway enrollment: local keypair (private key never leaves the machine) and pinned control-plane keys. 0600. |
-| `%APPDATA%\actiongate\service.log` | Windows service log. |
+| `%APPDATA%\actiongate\service.log` | Background control-plane log (rotates at 10 MB, one backup). |
 | `<project>\.claude\settings.local.json` | The PreToolUse + SessionStart hooks installed by `protect`. |
 
 ### Hook / CLI exit codes
@@ -419,7 +436,7 @@ inherit your shell environment — put the Slack settings in
 ## 12. Uninstalling
 
 ```powershell
-actiongate service uninstall            # remove the Windows service (elevated)
+actiongate service uninstall            # remove the sign-in task
 ```
 
 The embedded database lives in `%APPDATA%\actiongate\pgdata` (deleted with

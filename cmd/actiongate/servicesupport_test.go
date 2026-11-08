@@ -1,0 +1,219 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestRotatingFileCapsSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.log")
+	r, err := openRotatingFile(path, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := []byte(strings.Repeat("x", 29) + "\n") // 30 bytes
+	for i := 0; i < 50; i++ {
+		if _, err := r.Write(line); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{path, path + ".1"} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		if fi.Size() > 100 {
+			t.Errorf("%s is %d bytes, cap is 100", p, fi.Size())
+		}
+	}
+	if _, err := os.Stat(path + ".2"); err == nil {
+		t.Error("more than one backup kept")
+	}
+}
+
+func TestRotatingFileResumesExistingSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("y", 90)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := openRotatingFile(path, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Write([]byte(strings.Repeat("z", 20))); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	if fi, _ := os.Stat(path); fi.Size() != 20 {
+		t.Errorf("expected rotation on reopen-then-overflow, log is %d bytes", fi.Size())
+	}
+}
+
+func TestRetrierBacksOffAndDedupes(t *testing.T) {
+	now := time.Unix(0, 0)
+	r := newRetrier(10*time.Second, 5*time.Minute, 10*time.Minute)
+	r.now = func() time.Time { return now }
+	errDB := errors.New("database not ready")
+
+	var delays []time.Duration
+	logged := 0
+	for i := 0; i < 8; i++ {
+		d, suppressed := r.fail(errDB)
+		delays = append(delays, d)
+		if suppressed >= 0 {
+			logged++
+		}
+		now = now.Add(d)
+	}
+	want := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second,
+		160 * time.Second, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute}
+	for i := range want {
+		if delays[i] != want[i] {
+			t.Errorf("delay %d = %v, want %v", i, delays[i], want[i])
+		}
+	}
+	// Attempts land at t=0,10,30,70,150,310,610,910s: logged at 0 and at 610
+	// (the first attempt 10 min after the last log line).
+	if logged != 2 {
+		t.Errorf("logged %d of 8 identical failures, want 2", logged)
+	}
+
+	if _, suppressed := r.fail(errors.New("a different error")); suppressed != 0 {
+		t.Errorf("a new error must be logged at once, got suppressed=%d", suppressed)
+	}
+	r.reset()
+	if d, _ := r.fail(errDB); d != 10*time.Second {
+		t.Errorf("after reset the delay restarts at min, got %v", d)
+	}
+}
+
+func TestServiceStateRoundTrip(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "dev.json")
+	writeServiceState(cfg, serviceState{Phase: "waiting_for_database", Error: "boom"})
+	st, err := readServiceState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Phase != "waiting_for_database" || st.Error != "boom" || st.UpdatedAt.IsZero() {
+		t.Errorf("got %+v", st)
+	}
+	if !strings.Contains(st.describe(), "boom") {
+		t.Errorf("describe() = %q", st.describe())
+	}
+}
+
+// linkDir makes link point at target: a junction on Windows (no privilege
+// needed, so any local user can plant one), a symlink elsewhere.
+func linkDir(t *testing.T, target, link string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput() //nolint:gosec // G204: test temp paths
+		if err != nil {
+			t.Skipf("mklink /J: %v %s", err, out)
+		}
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip(err)
+	}
+}
+
+// A user who swaps the service directory for a junction to a system
+// directory must not get SYSTEM to write, rename or delete files there.
+func TestServiceFilesRefuseLinkedDirectory(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim")
+	if err := os.Mkdir(victim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "actiongate")
+	linkDir(t, victim, link)
+
+	writeServiceState(filepath.Join(link, "dev.json"), serviceState{Phase: "serving"})
+	if _, err := openRotatingFile(filepath.Join(link, "service.log"), 100); !errors.Is(err, errLinked) {
+		t.Errorf("openRotatingFile through a junction: got %v, want errLinked", err)
+	}
+	if entries, _ := os.ReadDir(victim); len(entries) != 0 {
+		t.Errorf("files were written through the junction: %v", entries)
+	}
+}
+
+// A status file replaced by a symlink must be replaced, not followed.
+func TestServiceStateDoesNotFollowFileSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "dev.json")
+	if err := os.Symlink(victim, serviceStatePath(cfg)); err != nil {
+		t.Skip("symlinks need privilege here:", err)
+	}
+	writeServiceState(cfg, serviceState{Phase: "serving"})
+	if got, _ := os.ReadFile(victim); string(got) != "precious" { //nolint:gosec // G304: test temp dir
+		t.Errorf("symlink target was overwritten: %q", got)
+	}
+}
+
+func TestRotateRefusesLinkedBackup(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "service.log")
+	if err := os.Symlink(victim, path+".1"); err != nil {
+		t.Skip("symlinks need privilege here:", err)
+	}
+	r, err := openRotatingFile(path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	_, _ = r.Write([]byte("0123456789"))
+	if _, err := r.Write([]byte("x")); !errors.Is(err, errLinked) {
+		t.Errorf("rotation onto a linked backup: got %v, want errLinked", err)
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "precious" { //nolint:gosec // G304: test temp dir
+		t.Errorf("victim changed: %q", got)
+	}
+}
+
+func TestWatchStopRequest(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "dev.json")
+	// A stale request from before start must not stop the new run.
+	if err := requestServiceStop(cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+	stopped := make(chan struct{})
+	go watchStopRequest(ctx, cfg, 10*time.Millisecond, func() { close(stopped) })
+
+	select {
+	case <-stopped:
+		t.Fatal("a stale stop request stopped the new run")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := requestServiceStop(cfg); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop request was not noticed")
+	}
+	if _, err := os.Stat(serviceStopPath(cfg)); !os.IsNotExist(err) {
+		t.Error("stop request file was not consumed")
+	}
+}
