@@ -156,7 +156,8 @@ Policies are compiled before they are saved, so a broken rule is rejected at set
 **What we found.**
 - Parsing buys **fewer interruptions** than a line tokenizer with the same rules: facts interrupt less for 251 developers and more for 28.
 - Against a **tuned regex**, parsing buys *different*, not clearly fewer, interruptions. Most of the detection gain is vocabulary: a regex given the analyzer's word lists comes close.
-- Limitations are stated in the paper. Some benchmarks and all audit labels were written by Claude agents (no human labels yet), and the audit of whether the extra stops are warranted was inconclusive. Ten deviations from the pre-specification are listed in [PREREGISTRATION.md](docs/research/PREREGISTRATION.md).
+- The pre-specified audit of whether the extra stops are warranted does **not** support facts: the Claude agent's labels were inconclusive, and one human annotator, added after the results, judged regex-only stops warranted more often than fact-only ones (17 vs. 9 of 30).
+- Limitations are stated in the paper. Some benchmarks and most labels were written by Claude agents. Eleven deviations from the pre-specification are listed in [PREREGISTRATION.md](docs/research/PREREGISTRATION.md).
 
 **Reproduce it.** Every number comes from the released harness (`cmd/agbench`), and [EVALUATION.md](docs/research/EVALUATION.md) gives the command behind each table. Policy evaluation takes well under a millisecond per action. Known gaps (inline interpreter code that builds strings at run time, unlisted credential stores such as `~/.kube/config`, tool-specific dry-run flags) are documented in the paper.
 
