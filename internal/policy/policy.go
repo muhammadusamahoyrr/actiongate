@@ -174,6 +174,9 @@ func (e *Engine) Compile(cfg SnapshotConfig) (*CompiledSnapshot, error) {
 		if !ast.OutputType().IsExactType(cel.BoolType) {
 			return nil, fmt.Errorf("rule %q: %w (got %s)", r.ID, ErrNotBoolean, ast.OutputType())
 		}
+		if err := checkFactRefs(ast); err != nil {
+			return nil, fmt.Errorf("rule %q: %w", r.ID, err)
+		}
 		// OptOptimize folds constants at plan time, including compiling
 		// constant regex patterns in matches() once instead of per call.
 		program, err := e.env.Program(ast, cel.EvalOptions(cel.OptOptimize))
