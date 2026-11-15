@@ -176,10 +176,11 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 
 // findString returns the first string anywhere in v (maps, slices, nested)
 // that match accepts. Depth is bounded so a hostile payload cannot recurse
-// without end.
+// without end, and nesting past the bound counts as a match (fail closed):
+// otherwise burying a path one level deeper would hide it.
 func findString(v any, depth int, match func(string) bool) (string, bool) {
 	if depth > 8 {
-		return "", false
+		return "(nested too deeply to inspect)", true
 	}
 	switch x := v.(type) {
 	case string:

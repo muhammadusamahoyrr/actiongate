@@ -23,6 +23,15 @@ func TestIsControlPath(t *testing.T) {
 	}
 }
 
+// deepNest returns n levels of nested maps around a harmless string.
+func deepNest(n int) any {
+	var v any = "src/main.go"
+	for range n {
+		v = map[string]any{"x": v}
+	}
+	return v
+}
+
 func TestSelfTamper(t *testing.T) {
 	cases := []struct {
 		tool   string
@@ -92,8 +101,24 @@ func TestSelfTamper(t *testing.T) {
 		{"PowerShell", map[string]any{"command": `Get-Item .claude\settings.json | Remove-Item`}, true},
 		{"PowerShell", map[string]any{"command": `Get-ChildItem .claude | Remove-Item -Recurse`}, true},
 
+		// Third review round.
+		{"Bash", map[string]any{"command": "rsync -t /tmp/settings.json .claude/settings.json"}, true}, // rsync -t = times, not target
+		{"Bash", map[string]any{"command": "cp -rt .claude /tmp/evil"}, true},
+		{"Bash", map[string]any{"command": "cp -t.claude /tmp/settings.json"}, true},
+		{"Bash", map[string]any{"command": "cp --target .claude /tmp/settings.json"}, true},
+		{"Bash", map[string]any{"command": "cp --target-dir=.claude /tmp/settings.json"}, true},
+		{"Bash", map[string]any{"command": `echo {} > "$CONF/actiongate/dev.json"`}, true},
+		{"Bash", map[string]any{"command": `rm -rf "$CONF/actiongate"`}, true},
+		{"PowerShell", map[string]any{"command": `Get-Item .claude\settings.json | Set-Content -Value '{}'`}, true},
+		{"PowerShell", map[string]any{"command": `Get-Item .claude\settings.json | Out-File -Encoding utf8`}, true},
+		{"mcp__deep", map[string]any{"a": deepNest(12)}, true}, // too deep to inspect: fail closed
+
 		// ...without flagging ordinary work.
 		{"Bash", map[string]any{"command": "rm -rf ~/src/actiongate/build"}, false}, // a checkout named actiongate
+		{"Bash", map[string]any{"command": "rsync -avt src/ /backup/src/"}, false},
+		{"Bash", map[string]any{"command": "cp -t /tmp .claude/settings.json"}, false}, // copies the control file away: read only
+		{"PowerShell", map[string]any{"command": `Get-Item .claude\settings.json | Set-Content -Path backup.json`}, false},
+		{"mcp__shallow", map[string]any{"a": deepNest(3)}, false},
 		{"Bash", map[string]any{"command": "cp notes.md .claude/commands/"}, false},
 		{"PowerShell", map[string]any{"command": `Get-Content .claude\settings.json | Set-Content backup.json`}, false}, // reads the control file only
 		{"PowerShell", map[string]any{"command": `Get-Item .claude | Move-Item -Destination C:\tmp\x`}, true},

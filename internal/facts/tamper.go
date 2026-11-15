@@ -39,7 +39,10 @@ func IsControlPath(p string) bool {
 		// glob inside .claude counts too: it can expand to the settings.
 		return matchName(base, "settings.json", "settings.local.json") || strings.ContainsAny(base, "*?[")
 	}
-	return matchName(base, "dev.json") && isActiongateConfigDir(dir)
+	// dev.json under ANY directory named actiongate: its parent may be a
+	// variable or expression the analyzer cannot resolve, so do not
+	// narrow this to the known config roots.
+	return matchName(base, "dev.json") && matchName(parent, "actiongate")
 }
 
 // matchName reports whether one path component is, or as a glob could
@@ -79,11 +82,13 @@ func isActiongateConfigDir(p string) bool {
 	}
 	parent := path.Base(path.Dir(p))
 	switch parent {
-	case "roaming", ".config", "application support", "$env:appdata", "%appdata%", "$appdata",
-		"$xdg_config_home", "${xdg_config_home}", "$env:xdg_config_home":
+	case "roaming", ".config", "application support":
 		return true
 	}
-	return strings.ContainsAny(parent, "*?[")
+	// A parent the analyzer cannot read (a variable — the shell analyzer
+	// renders an unresolved one as \x00 — an expression, a glob) may be
+	// the config root: fail closed.
+	return strings.ContainsAny(parent, "*?[$%(\x00")
 }
 
 // controlBaseName reports whether a bare file name is one a control file
@@ -216,26 +221,7 @@ func (a *shellAnalyzer) tamperArgs(name string, rest []arg) {
 			}
 		}
 	case copyLike[name]:
-		var ops []arg
-		dest, recursive := "", false
-		for i := 0; i < len(rest); i++ {
-			t := rest[i].text
-			switch {
-			case t == "-t" || t == "--target-directory":
-				if i+1 < len(rest) {
-					dest = rest[i+1].text
-					i++
-				}
-			case strings.HasPrefix(t, "--target-directory="):
-				dest = strings.TrimPrefix(t, "--target-directory=")
-			case t == "--recursive" || t == "--archive":
-				recursive = true
-			case strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--"):
-				recursive = recursive || strings.ContainsAny(t, "rRa")
-			case !strings.HasPrefix(t, "-"):
-				ops = append(ops, rest[i])
-			}
-		}
+		ops, dest, recursive := copyOperands(name, rest)
 		srcs := ops
 		if dest == "" {
 			if len(ops) == 0 {
@@ -276,6 +262,57 @@ func (a *shellAnalyzer) tamperArgs(name string, rest []arg) {
 	}
 }
 
+// targetDirCmds are the copy-like commands with GNU's -t/--target-directory
+// (rsync -t preserves times and scp has no -t, so they keep the last
+// operand as destination).
+var targetDirCmds = set("cp", "mv", "install", "ln")
+
+// copyOperands splits a copy-like command into its operands, an explicit
+// target directory (-t DIR, -tDIR, -rt DIR, --target-directory=DIR, or any
+// unambiguous prefix such as --target DIR) and whether it copies trees.
+func copyOperands(name string, rest []arg) (ops []arg, dest string, recursive bool) {
+	takesT := targetDirCmds[name]
+	for i := 0; i < len(rest); i++ {
+		t := rest[i].text
+		switch {
+		case t == "--":
+			ops = append(ops, rest[i+1:]...)
+			return ops, dest, recursive
+		case strings.HasPrefix(t, "--"):
+			opt, val, hasVal := strings.Cut(t, "=")
+			switch {
+			case takesT && len(opt) >= 4 && strings.HasPrefix("--target-directory", opt):
+				if !hasVal && i+1 < len(rest) {
+					val = rest[i+1].text
+					i++
+				}
+				dest = val
+			case strings.HasPrefix("--recursive", opt) && len(opt) >= 5, strings.HasPrefix("--archive", opt) && len(opt) >= 4:
+				recursive = true
+			}
+		case len(t) > 1 && t[0] == '-':
+			cluster := t[1:]
+			for j, r := range cluster {
+				if r == 'r' || r == 'R' || r == 'a' {
+					recursive = true
+				}
+				if r == 't' && takesT {
+					if v := cluster[j+1:]; v != "" {
+						dest = v
+					} else if i+1 < len(rest) {
+						dest = rest[i+1].text
+						i++
+					}
+					break
+				}
+			}
+		default:
+			ops = append(ops, rest[i])
+		}
+	}
+	return ops, dest, recursive
+}
+
 // inPlace reports whether sed/perl was asked to edit files in place: an i
 // anywhere in a short-option cluster (sed -ni, sed -Ei, perl -pi.bak), up
 // to an option whose argument follows (-e, -f), or --in-place.
@@ -311,6 +348,28 @@ var psWriters = set("set-content", "sc", "add-content", "ac", "clear-content", "
 // their own path, so piping a control file into one only reads it.
 var psPipeTargets = set("remove-item", "rm", "ri", "del", "erase", "rmdir", "rd", "rename-item", "ren", "rni",
 	"move-item", "move", "mv", "mi", "clear-content", "clc", "set-itemproperty", "sp", "set-acl")
+
+// psExplicitPath reports whether a writer's arguments (up to the end of its
+// pipeline element) name its own path: -Path / -LiteralPath / -FilePath,
+// or a positional path straight after the cmdlet. Anything else (e.g.
+// "Set-Content -Encoding utf8 x") is treated as binding from the pipe.
+func psExplicitPath(args []string) bool {
+	for i, t := range args {
+		if psSeparator(t) || t == ")" || t == "}" {
+			return false
+		}
+		l := strings.ToLower(t)
+		for _, p := range []string{"-path", "-literalpath", "-filepath", "-pspath", "-lp"} {
+			if l == p || strings.HasPrefix(l, p+":") {
+				return true
+			}
+		}
+		if i == 0 && !strings.HasPrefix(t, "-") {
+			return true
+		}
+	}
+	return false
+}
 
 // psLocation are the cmdlets and aliases that change directory.
 var psLocation = set("set-location", "sl", "cd", "chdir", "push-location", "pushd")
@@ -368,7 +427,10 @@ func (st *psTamperState) statement(toks []string) (string, bool) {
 			switch n := cmdName(strings.Trim(t, `"'`)); {
 			case psWriters[n]:
 				writer = n
-				if i > 0 && toks[i-1] == "|" && upstream != "" && psPipeTargets[n] {
+				// A content writer (Set-Content, Out-File, ...) binds its
+				// Path from the pipe unless it names its own; only then is
+				// the upstream control file merely read.
+				if i > 0 && toks[i-1] == "|" && upstream != "" && (psPipeTargets[n] || !psExplicitPath(toks[i+1:])) {
 					return n + " modifies piped actiongate control path " + path.Base(slash(upstream)), true
 				}
 				continue
