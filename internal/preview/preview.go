@@ -97,11 +97,19 @@ func fence(s string) string { return strings.ReplaceAll(s, "```", "'''") }
 
 var credentialKey = regexp.MustCompile(`(?i)password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential|cookie|session`)
 
-// redact returns v with every scalar under a credential-like key replaced
-// by the marker, walking nested maps and lists (bounded depth).
+// tokenShaped: a value that looks like a credential and cannot be a
+// command — no spaces, no metacharacters.
+var tokenShaped = regexp.MustCompile(`^[A-Za-z0-9._~+/=@%:!,-]{6,}$`)
+
+// redact returns v with credential values replaced by the marker, walking
+// nested maps and lists. A value is hidden only if its key is
+// credential-like AND the value itself is token-shaped: hiding anything
+// else (a "session_cmd": "rm -rf ~") would hide what the approver must
+// see. Past the depth bound nothing more is hidden; the text masking and
+// the length bound still apply to the final string.
 func redact(key string, v any, depth int) any {
 	if depth > 8 {
-		return "[nested too deeply]"
+		return v
 	}
 	switch x := v.(type) {
 	case map[string]any:
@@ -119,10 +127,13 @@ func redact(key string, v any, depth int) any {
 	case nil, bool:
 		return x
 	}
-	if credentialKey.MatchString(key) {
+	if !credentialKey.MatchString(key) {
+		return v
+	}
+	if s, ok := v.(string); ok && tokenShaped.MatchString(s) {
 		return masked
 	}
-	return v
+	return v // not token-shaped: shown (Mask still catches "Bearer x" etc.)
 }
 
 func truncate(s string, n int) string {
