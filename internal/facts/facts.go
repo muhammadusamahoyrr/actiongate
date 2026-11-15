@@ -13,6 +13,7 @@ package facts
 
 import (
 	"path"
+	"sort"
 	"strings"
 )
 
@@ -35,8 +36,28 @@ type Facts struct {
 	// own enforcement depends on (the Claude Code hook settings, ag-hook,
 	// gateway state, dev.json). See tamper.go.
 	SelfTamper bool
+	// SelfSecret: the action reads actiongate's OWN secrets — anything in its
+	// per-user config directory (dev.json: DB password and signing seeds;
+	// gateway.json: the gateway credential and key; pgdata: the database
+	// files). Implies SecretAccess. The policy engine denies it before any
+	// pack rule runs (see internal/policy), so no pack can allow it.
+	SelfSecret bool
 	// Reasons explains each fact that is true, for the audit trail.
 	Reasons []string
+}
+
+// Keys lists every fact name a rule may use as facts.<name>. Policies are
+// validated against it at compile time (internal/policy), so a typo or a
+// fact this build does not know is rejected instead of failing every
+// evaluation.
+func Keys() []string {
+	m := Facts{}.Map()
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // Map is the CEL-facing form. Every key is always present, so rules can read
@@ -49,6 +70,7 @@ func (f Facts) Map() map[string]bool {
 		"opaque":         f.Opaque,
 		"inline_dynamic": f.InlineDynamic,
 		"self_tamper":    f.SelfTamper,
+		"self_secret":    f.SelfSecret,
 	}
 }
 
@@ -87,6 +109,7 @@ func (f *Facts) merge(o Facts) {
 	f.Opaque = f.Opaque || o.Opaque
 	f.InlineDynamic = f.InlineDynamic || o.InlineDynamic
 	f.SelfTamper = f.SelfTamper || o.SelfTamper
+	f.SelfSecret = f.SelfSecret || o.SelfSecret
 	for _, r := range o.Reasons {
 		f.add(r)
 	}
@@ -170,6 +193,17 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 		if p, ok := findString(params, 0, func(s string) bool { return IsControlPath(s) || IsControlDir(s) }); ok {
 			f.selfTamper(tool + " on actiongate control path " + path.Base(slash(p)))
 		}
+		// ...and may read any path it is given.
+		if p, ok := findString(params, 0, IsActiongateSecretPath); ok {
+			f.secret(tool + " on actiongate secret path " + path.Base(slash(p)))
+		}
+	}
+	// A secret access that names actiongate's own config directory is
+	// self_secret. The secret detectors above already decided it READS the
+	// path (cat, cp source, Read, Grep, ...); a plain `ls` sets nothing.
+	if f.SecretAccess && mentionsActiongateSecret(params) {
+		f.SelfSecret = true
+		f.add("reads actiongate's own secrets (its config directory)")
 	}
 	return f
 }
@@ -213,6 +247,9 @@ func IsSecretPath(p string) bool {
 	p = strings.Trim(strings.TrimSpace(p), `"'`)
 	if p == "" {
 		return false
+	}
+	if IsActiongateSecretPath(p) {
+		return true
 	}
 	p = strings.ToLower(slash(p))
 	base := path.Base(p)

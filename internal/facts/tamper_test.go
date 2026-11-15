@@ -23,6 +23,36 @@ func TestIsControlPath(t *testing.T) {
 	}
 }
 
+func TestIsActiongateSecretPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		`C:\Users\x\AppData\Roaming\actiongate\dev.json`:           true,
+		`C:\Users\x\AppData\Roaming\actiongate\pgdata\base\1\1259`: true,
+		`C:\Users\x\AppData\Roaming\actiongate`:                    true, // the directory itself (grep, tar)
+		"/home/x/.config/actiongate/gateway.json":                  true,
+		"/Users/x/Library/Application Support/actiongate/dev.json": true,
+		"$APPDATA/actiongate/dev.json":                             true,
+		`$env:APPDATA\actiongate\gateway.json`:                     true,
+		"/anything/actiongate/dev.json":                            true, // parent may be unresolvable
+		"/home/x/src/actiongate/README.md":                         false,
+		"/home/x/src/actiongate/internal/facts/facts.go":           false,
+		"/home/x/app/dev.json":                                     false,
+		"gateway.json":                                             false,
+	} {
+		if got := IsActiongateSecretPath(p); got != want {
+			t.Errorf("IsActiongateSecretPath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
+func TestSelfSecretNeedsARead(t *testing.T) {
+	if f := Derive("Bash", map[string]any{"command": "ls ~/.config/actiongate"}); f.SelfSecret {
+		t.Errorf("listing the directory is not a read: %v", f.Reasons)
+	}
+	if f := Derive("Bash", map[string]any{"command": "cat ~/.config/actiongate/dev.json"}); !f.SelfSecret || !f.SecretAccess {
+		t.Errorf("cat dev.json: self_secret=%v secret=%v", f.SelfSecret, f.SecretAccess)
+	}
+}
+
 // deepNest returns n levels of nested maps around a harmless string.
 func deepNest(n int) any {
 	var v any = "src/main.go"

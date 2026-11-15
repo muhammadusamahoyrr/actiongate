@@ -491,6 +491,50 @@ func (st *psTamperState) statement(toks []string) (string, bool) {
 	return "", false
 }
 
+// IsActiongateSecretPath reports whether a path lies in actiongate's own
+// per-user config directory, or is that directory: dev.json (DB password,
+// token secret, signing seeds, Slack secret), gateway.json (the gateway's
+// bearer credential and Ed25519 seed), pgdata (the database files),
+// postgres.log. dev.json and gateway.json count under any directory named
+// actiongate, since its parent may be a variable the analyzer cannot read.
+// Nothing in it is something an agent needs to read.
+func IsActiongateSecretPath(p string) bool {
+	p = normPath(p)
+	if p == "" {
+		return false
+	}
+	if matchName(path.Base(p), "dev.json", "gateway.json", "gateway.json.lock") && matchName(path.Base(path.Dir(p)), "actiongate") {
+		return true
+	}
+	for q := p; ; q = path.Dir(q) {
+		if isActiongateConfigDir(q) {
+			return true
+		}
+		if parent := path.Dir(q); parent == q || parent == "." {
+			return false
+		}
+	}
+}
+
+// mentionsActiongateSecret reports whether any string in params, or any
+// word of one (a shell command), names an actiongate secret path.
+func mentionsActiongateSecret(params map[string]any) bool {
+	_, ok := findString(params, 0, func(s string) bool {
+		if IsActiongateSecretPath(s) {
+			return true
+		}
+		for _, w := range strings.FieldsFunc(s, func(r rune) bool {
+			return strings.ContainsRune(" \t\r\n'\"`;|&<>()=,{}", r)
+		}) {
+			if IsActiongateSecretPath(w) {
+				return true
+			}
+		}
+		return false
+	})
+	return ok
+}
+
 func (f *Facts) selfTamper(reason string) {
 	f.SelfTamper = true
 	f.add(reason)
