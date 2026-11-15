@@ -9,6 +9,13 @@
       "risk_classification": "secrets"
     },
     {
+      "id": "approve-self-tamper",
+      "description": "Even relaxed, the agent may not quietly switch actiongate off: changes to the hook settings, ag-hook or gateway state wait for a human",
+      "condition": "facts.self_tamper",
+      "decision": "requires_approval",
+      "risk_classification": "self_tamper"
+    },
+    {
       "id": "approve-catastrophic-bash",
       "description": "Only truly catastrophic shell commands wait for a human",
       "condition": "tool_name == \"Bash\" && has(params.command) && (params.command.contains(\"rm -rf /\") || params.command.contains(\"rm -rf ~\") || params.command.contains(\"rm -rf C:\") || params.command.contains(\"dd if=\") || params.command.contains(\"mkfs\") || params.command.contains(\"DROP DATABASE\") || params.command.contains(\":(){\"))",

@@ -1,6 +1,7 @@
 package facts
 
 import (
+	"path"
 	"regexp"
 	"strings"
 
@@ -127,6 +128,12 @@ func (a *shellAnalyzer) visit(node syntax.Node) bool {
 					a.f.secret("redirects a secret file into a command")
 				}
 			}
+			switch r.Op {
+			case syntax.RdrOut, syntax.AppOut, syntax.ClbOut, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
+				if t := a.approx(r.Word); IsControlPath(t) {
+					a.f.selfTamper("redirects output into actiongate control file " + path.Base(slash(t)))
+				}
+			}
 			var body *syntax.Word
 			switch {
 			case r.Hdoc != nil:
@@ -226,6 +233,7 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 	}
 	name := cmdName(args[0].text)
 	rest := args[1:]
+	a.tamperArgs(name, rest)
 
 	switch {
 	case name == "rm":
@@ -495,6 +503,9 @@ func inspectCode(code string, depth int, o Options) Facts {
 		if IsSecretPath(s) {
 			f.secret("inline code opens secret file " + s)
 		}
+		if IsControlPath(s) {
+			f.selfTamper("inline code names actiongate control file " + s)
+		}
 		if strings.Contains(s, " ") && depth <= maxDepth {
 			inner := shellDepth(s, depth+1, o)
 			if inner.Destructive {
@@ -502,6 +513,9 @@ func inspectCode(code string, depth int, o Options) Facts {
 			}
 			if inner.SecretAccess {
 				f.secret("inline code runs a shell command that reads secrets")
+			}
+			if inner.SelfTamper {
+				f.selfTamper("inline code runs a shell command that modifies actiongate control files")
 			}
 		}
 	}

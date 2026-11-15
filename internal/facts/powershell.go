@@ -33,6 +33,9 @@ func psStatement(stmt string, depth int) Facts {
 		f.opaque("PowerShell script block built at run time")
 	}
 	toks := psTokens(stmt)
+	if why, ok := psTamper(toks); ok {
+		f.selfTamper(why)
+	}
 	recurse := false
 	for _, t := range toks {
 		l := strings.ToLower(t)
