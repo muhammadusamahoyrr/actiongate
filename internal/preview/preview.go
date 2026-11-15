@@ -50,7 +50,10 @@ func Action(tool string, params map[string]any) string {
 	sort.Strings(keys)
 	var b strings.Builder
 	for _, k := range keys {
-		v, err := json.Marshal(params[k])
+		// Structural redaction: values under credential-like keys, at any
+		// depth, are replaced before marshalling — no regex over the text.
+		val := redact(k, params[k], 0)
+		v, err := json.Marshal(val)
 		if err != nil {
 			continue
 		}
@@ -91,6 +94,36 @@ func inline(s string) string {
 
 // fence keeps text from closing the code block it sits in.
 func fence(s string) string { return strings.ReplaceAll(s, "```", "'''") }
+
+var credentialKey = regexp.MustCompile(`(?i)password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential|cookie|session`)
+
+// redact returns v with every scalar under a credential-like key replaced
+// by the marker, walking nested maps and lists (bounded depth).
+func redact(key string, v any, depth int) any {
+	if depth > 8 {
+		return "[nested too deeply]"
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = redact(k, e, depth+1)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = redact(key, e, depth+1)
+		}
+		return out
+	case nil, bool:
+		return x
+	}
+	if credentialKey.MatchString(key) {
+		return masked
+	}
+	return v
+}
 
 func truncate(s string, n int) string {
 	if len(s) <= n {

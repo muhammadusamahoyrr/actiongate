@@ -107,6 +107,30 @@ func TestBodyNeutralisesMarkup(t *testing.T) {
 	}
 }
 
+// Non-shell tools are redacted structurally: credential-like keys at any
+// depth, before marshalling.
+func TestActionRedactsNestedCredentialKeys(t *testing.T) {
+	got := Action("mcp__api__call", map[string]any{
+		"url": "https://api.example.com/v1/x",
+		"headers": map[string]any{
+			"Authorization": "Bearer abcdefghijklmnop",
+			"X-Request-Id":  "r-1",
+		},
+		"body":    map[string]any{"user": "alice", "credentials": map[string]any{"apiKey": "k-123456", "region": "eu"}},
+		"retries": 3,
+	})
+	for _, secret := range []string{"abcdefghijklmnop", "k-123456"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("nested credential %q shown: %s", secret, got)
+		}
+	}
+	for _, keep := range []string{"api.example.com", "r-1", "alice", "retries=3"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("non-secret %q missing: %s", keep, got)
+		}
+	}
+}
+
 func TestActionBoundsAndSummarises(t *testing.T) {
 	long := strings.Repeat("echo hi; ", 200)
 	a := Action("Bash", map[string]any{"command": long})
