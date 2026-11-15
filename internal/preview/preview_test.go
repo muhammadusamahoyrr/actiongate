@@ -77,7 +77,11 @@ func TestMaskPreservesTheCommandAroundSecrets(t *testing.T) {
 		"(TOKEN=abc123)":              "(TOKEN=[credential hidden])",
 		"TOKEN=abc123\nrm -rf ~":      "TOKEN=[credential hidden]\nrm -rf ~",
 		`{"api_key":"abc123","x":1}`:  `{"api_key":[credential hidden],"x":1}`,
-		`PASSWORD='p@ss word' ./run`:  `PASSWORD=[credential hidden] ./run`,
+		`PASSWORD='p@ss word' ./run`:  `PASSWORD='p@ss word' ./run`, // space: shown as written
+		`PASSWORD='p@ssw0rd' ./run`:   `PASSWORD=[credential hidden] ./run`,
+		`PASSWORD="a,b" ./run`:        `PASSWORD=[credential hidden] ./run`,
+		`TOKEN=a,b ./run`:             `TOKEN=[credential hidden] ./run`,
+		`eval 'TOKEN=' rm -rf ~ ''`:   `eval 'TOKEN=' rm -rf ~ ''`,  // a closing quote misread as opening must hide nothing
 		`PASSWORD='p@ss w;rd' ./run`:  `PASSWORD='p@ss w;rd' ./run`, // metacharacter: shown as written
 		`sh -c "TOKEN='$(rm -rf ~)'"`: `sh -c "TOKEN='$(rm -rf ~)'"`,
 		"export API_KEY=abc123":       "export API_KEY=[credential hidden]",
