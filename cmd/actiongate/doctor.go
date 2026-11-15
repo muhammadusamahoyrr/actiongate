@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,6 +75,10 @@ func cmdDoctor(_ []string) int {
 	ok = ok && cpHealthy
 	fmt.Printf("%s %-16s %s\n", mark(cpHealthy), "Control plane", cpMsg)
 
+	hookOK, hookMark, hookMsg := hookProtection(managedSettingsPath(), defaultInstallDir())
+	ok = ok && hookOK
+	fmt.Printf("%s %-16s %s\n", hookMark, "Hook", hookMsg)
+
 	fmt.Println()
 	if ok {
 		fmt.Println("Everything healthy.")
@@ -81,6 +86,25 @@ func cmdDoctor(_ []string) int {
 	}
 	fmt.Println("Some checks failed — see the ✖ lines above.")
 	return 1
+}
+
+// hookProtection reports how tamper-resistant the hook install is. A
+// project-level hook is a warning (it works, but the agent can edit it);
+// a managed hook whose files this user can write is a failure, because it
+// looks protected and is not.
+func hookProtection(settingsPath, installDir string) (ok bool, mark, msg string) {
+	if _, present := managedHookInstalled(settingsPath); !present {
+		return true, "!", "project-level only — the agent can edit it; run `actiongate protect claude-code -managed` as administrator"
+	}
+	if isElevated() {
+		return true, "!", "managed hook present (run doctor as your normal user to check the files are out of its reach)"
+	}
+	for _, p := range []string{settingsPath, filepath.Join(installDir, exeName("ag-hook")), filepath.Join(installDir, exeName("gateway"))} {
+		if writableByCurrentUser(p) {
+			return false, "✖", "managed hook present, but " + p + " is writable by you — the agent could replace it"
+		}
+	}
+	return true, "✔", "managed (admin-only): " + settingsPath
 }
 
 func mark(ok bool) string {

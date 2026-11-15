@@ -23,6 +23,10 @@
 //	AG_HOOK_WAIT     how long to block on approval, Go duration (default "5m")
 //	AG_HOOK_GATEWAY  path to the gateway binary (default: next to this binary)
 //	AG_HOOK_SERVER   control-plane URL for -warn (default: enrolled server)
+//
+// With -locked (the admin-installed managed hook), AG_HOOK_AGENT and
+// AG_HOOK_GATEWAY are ignored and the gateway state path comes from the OS
+// profile, because the governed agent can set hook env vars via settings.
 package main
 
 import (
@@ -105,8 +109,17 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// overridable is envOr for settings that change WHO is governed or BY
+// WHAT: ignored when locked.
+func overridable(key, fallback string) string {
+	if locked {
+		return fallback
+	}
+	return envOr(key, fallback)
+}
+
 func gatewayPath() (string, error) {
-	if p := os.Getenv("AG_HOOK_GATEWAY"); p != "" {
+	if p := os.Getenv("AG_HOOK_GATEWAY"); p != "" && !locked {
 		return p, nil
 	}
 	self, err := os.Executable()
@@ -152,8 +165,25 @@ CLOSED (blocked) until it is back. Fix: 'actiongate service status', then
 `, serverURL)
 }
 
+// locked is set by -locked, which `actiongate protect -managed` puts in the
+// admin-owned managed hook. Claude Code settings can set environment
+// variables for hooks, so the governed agent could point AG_HOOK_GATEWAY at
+// a no-op or APPDATA at a forged gateway state. Locked, ag-hook ignores
+// those overrides: the gateway is always the sibling binary (admin-only
+// install dir) and the state path comes from the OS profile, not env.
+var locked bool
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "-warn" {
+	warnMode := false
+	for _, a := range os.Args[1:] {
+		switch a {
+		case "-warn":
+			warnMode = true
+		case "-locked":
+			locked = true
+		}
+	}
+	if warnMode {
 		warn()
 		os.Exit(0)
 	}
@@ -193,17 +223,25 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), waitDur+checkSlack)
 	defer cancel()
-	// #nosec G204 -- gw is the sibling gateway binary (or the operator's
-	// explicit AG_HOOK_GATEWAY override); invoking it is this bridge's
-	// entire purpose.
-	cmd := exec.CommandContext(ctx, gw, "check",
-		"-agent", envOr("AG_HOOK_AGENT", "claude-code"),
+	checkArgs := []string{"check",
+		"-agent", overridable("AG_HOOK_AGENT", "claude-code"),
 		"-session", session,
 		"-request-id", uuid.NewString(),
 		"-tool", in.ToolName,
 		"-params", "-", // on stdin: a Write of a large file exceeds the OS argument limit
 		"-wait", wait,
-	)
+	}
+	if locked {
+		state, err := profileStatePath()
+		if err != nil {
+			block("actiongate: cannot locate the gateway state from the OS profile; failing closed")
+		}
+		checkArgs = append(checkArgs, "-state", state)
+	}
+	// #nosec G204 -- gw is the sibling gateway binary (or, unlocked, the
+	// operator's explicit AG_HOOK_GATEWAY override); invoking it is this
+	// bridge's entire purpose.
+	cmd := exec.CommandContext(ctx, gw, checkArgs...)
 	cmd.Stdin = strings.NewReader(params)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
