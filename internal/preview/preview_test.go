@@ -151,6 +151,16 @@ func TestActionNeverHidesCommandsInParams(t *testing.T) {
 	if strings.Count(got, "rm -rf ~") < 2 {
 		t.Errorf("the deeply nested command was hidden: %s", got)
 	}
+	// Deep credentials are still redacted (no depth cutoff), and numeric
+	// credentials are always hidden.
+	deepSecret := any(map[string]any{"api_key": "k-9876543210"})
+	for range 12 {
+		deepSecret = map[string]any{"n": deepSecret}
+	}
+	got = Action("mcp__x__run", map[string]any{"d": deepSecret, "pin_token": 123456})
+	if strings.Contains(got, "k-9876543210") || strings.Contains(got, "123456") {
+		t.Errorf("deep or numeric credential shown: %s", got)
+	}
 }
 
 func TestActionBoundsAndSummarises(t *testing.T) {

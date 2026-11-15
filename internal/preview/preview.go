@@ -102,38 +102,49 @@ var credentialKey = regexp.MustCompile(`(?i)password|passwd|pwd|secret|token|api
 var tokenShaped = regexp.MustCompile(`^[A-Za-z0-9._~+/=@%:!,-]{6,}$`)
 
 // redact returns v with credential values replaced by the marker, walking
-// nested maps and lists. A value is hidden only if its key is
-// credential-like AND the value itself is token-shaped: hiding anything
-// else (a "session_cmd": "rm -rf ~") would hide what the approver must
-// see. Past the depth bound nothing more is hidden; the text masking and
-// the length bound still apply to the final string.
-func redact(key string, v any, depth int) any {
-	if depth > 8 {
-		return v
+// the whole tree (no depth cutoff; a node budget bounds the work). Under a
+// credential-like key a number or boolean is always hidden (it cannot be a
+// command), and a string only if it is token-shaped: a string with spaces
+// may be a command ("session_cmd": "shutdown now") and hiding it would hide
+// what the approver must see — the deliberate trade-off is that such a
+// value is shown. Content beyond the budget lies far past the preview's
+// length bound and is never displayed.
+func redact(key string, v any, _ int) any {
+	budget := 10000
+	return redactWalk(key, v, &budget)
+}
+
+func redactWalk(key string, v any, budget *int) any {
+	*budget--
+	if *budget < 0 {
+		return "[…]" // beyond any length the preview shows
 	}
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, e := range x {
-			out[k] = redact(k, e, depth+1)
+			out[k] = redactWalk(k, e, budget)
 		}
 		return out
 	case []any:
 		out := make([]any, len(x))
 		for i, e := range x {
-			out[i] = redact(key, e, depth+1)
+			out[i] = redactWalk(key, e, budget)
 		}
 		return out
-	case nil, bool:
+	case nil:
 		return x
 	}
 	if !credentialKey.MatchString(key) {
 		return v
 	}
-	if s, ok := v.(string); ok && tokenShaped.MatchString(s) {
-		return masked
+	if s, ok := v.(string); ok {
+		if tokenShaped.MatchString(s) {
+			return masked
+		}
+		return v // may be a command: shown (Mask still catches "Bearer x" etc.)
 	}
-	return v // not token-shaped: shown (Mask still catches "Bearer x" etc.)
+	return masked // numbers, booleans: never commands
 }
 
 func truncate(s string, n int) string {
