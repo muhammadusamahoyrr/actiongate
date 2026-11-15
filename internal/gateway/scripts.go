@@ -74,7 +74,16 @@ func readScript(s facts.Script, cwd string) map[string]any {
 	if s.UnknownDir {
 		return fail("runs after a cd to a directory that cannot be resolved")
 	}
+	if s.Uncertain {
+		return fail("an option before the script is not modelled, so which file runs is uncertain")
+	}
 	p := resolveScriptPath(s.Path, cwd)
+	// Never copy a secret into the action (it would be stored with it):
+	// `source .env` is reported as reading a secret, not attached.
+	if facts.IsSecretPath(s.Path) || facts.IsSecretPath(p) {
+		entry["secret"] = true
+		return entry
+	}
 
 	if s.Via == "npm" {
 		raw, err := readBounded(p)

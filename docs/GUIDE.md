@@ -248,10 +248,15 @@ A policy is JSON: a `default_decision` plus an ordered list of rules.
   typed inline. So writing `rm -rf ~` into a file and then running the file
   gets the same facts as typing it. A script that cannot be read in full
   (missing because the same command creates it, over 256 KiB, binary
-  handed to an interpreter, or behind a `cd` to an unresolvable directory)
-  is `opaque`. Known limits: a file rewritten by a *parallel* tool call
-  between the check and the run, `make` targets, and npm lifecycle scripts
-  run by `npm install`.
+  handed to an interpreter, behind a `cd` to an unresolvable directory,
+  after an option the analyzer does not model, or with an unknown shebang
+  interpreter) is `opaque`. A file run directly is read the way the kernel
+  runs it: by its shebang, not its extension. Secret files are never
+  copied into the action: `source .env` is judged a secret read. Known
+  limits: a file rewritten by a *parallel* tool call between the check and
+  the run (a pre-run hook cannot close that window; the audit log records
+  the text that was judged), `make` targets, and npm lifecycle scripts run
+  by `npm install`.
 - **Built-in protection** applies whatever pack is active: reading
   ActionGate's own secrets (`facts.self_secret`) is always denied, before
   any pack rule runs, and an action that would change its enforcement

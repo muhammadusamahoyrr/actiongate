@@ -38,6 +38,17 @@ type Script struct {
 	// cannot resolve, so Path cannot be located. The gateway reports it
 	// unreadable, which is opaque.
 	UnknownDir bool `json:"unknown_dir,omitempty"`
+	// Uncertain: an option the analyzer does not model came before the
+	// operand, so Path may be that option's value and the real script
+	// another word. Reported opaque rather than guessed.
+	Uncertain bool `json:"uncertain,omitempty"`
+}
+
+// markUncertain flags the script just recorded.
+func (a *shellAnalyzer) markUncertain(unsure bool) {
+	if unsure && len(a.scripts) > 0 {
+		a.scripts[len(a.scripts)-1].Uncertain = true
+	}
 }
 
 // ScriptsRun lists the local scripts a Bash or PowerShell command would
@@ -73,15 +84,42 @@ func shellScriptsDepth(cmd string, depth int) (out []Script) {
 	return a.scripts
 }
 
-// scriptValueFlags take a value as the next word (bash -o pipefail x.sh).
-var scriptValueFlags = map[string]string{
-	"shell":   "oO",
-	"python":  "WXQ",
-	"node":    "r",
-	"perl":    "IM",
-	"ruby":    "IrE",
-	"php":     "dc",
-	"default": "",
+// runnerOpts models a runner's options well enough to find its script
+// operand. An option it does not list makes the operand UNCERTAIN (it may
+// take the next word as its value: bash --rcfile evil.sh x.sh), which is
+// reported opaque rather than guessed.
+type runnerOpts struct {
+	noValue, value         string          // short options
+	longNoValue, longValue map[string]bool // long options (--x=y is always self-contained)
+	inline                 map[string]bool // code given inline / from stdin: no script operand
+}
+
+var runners = map[string]runnerOpts{
+	"shell": {
+		noValue: "abefhkmnptuvxBCEHPTilr", value: "oO",
+		longNoValue: set("--norc", "--noprofile", "--login", "--posix", "--verbose", "--noediting", "--restricted", "--debugger", "--help", "--version"),
+		longValue:   set("--rcfile", "--init-file"),
+		inline:      set("-c", "-s"),
+	},
+	"python": {
+		noValue: "bBdEhiIOPqsSuvVxR", value: "WXQ",
+		longNoValue: set("--help", "--version"), longValue: set("--check-hash-based-pycs"),
+		inline: set("-c", "-m", "-"),
+	},
+	"node": {
+		noValue: "vhic", value: "r",
+		longNoValue: set("--no-warnings", "--trace-warnings", "--enable-source-maps", "--inspect", "--inspect-brk",
+			"--watch", "--test", "--expose-gc", "--no-deprecation", "--trace-deprecation", "--preserve-symlinks",
+			"--abort-on-uncaught-exception", "--trace-uncaught", "--help", "--version"),
+		longValue: set("--require", "--import", "--loader", "--experimental-loader", "--env-file", "--max-old-space-size"),
+		inline:    set("-e", "-p", "--eval", "--print", "-"),
+	},
+	"perl":  {noValue: "wWXtTcnpasluU0", value: "IM", inline: set("-e", "-E", "-")},
+	"ruby":  {noValue: "wWvcdynpalhs", value: "IrEC", inline: set("-e", "-")},
+	"php":   {noValue: "hvqsnailw", value: "dcz", inline: set("-r", "-")},
+	"deno":  {inline: set("--eval", "-")},
+	"bun":   {inline: set("-e", "--eval", "-")},
+	"other": {inline: set("-c", "-e", "-")},
 }
 
 // collectScript records the script a command runs, if any. It mirrors how
@@ -149,33 +187,33 @@ func (a *shellAnalyzer) collectScript(args []arg) {
 				return
 			}
 		}
-		if p, ok := scriptOperand(rest, scriptValueFlags["shell"], set("-c")); ok {
+		if p, ok, unsure := scriptOperand(rest, runners["shell"]); ok {
 			add(p, "shell", "")
+			a.markUncertain(unsure)
 		}
 	case name == "source" || name == ".":
 		if len(rest) > 0 {
 			add(rest[0].text, "shell", "")
 		}
 	case interpreters[name]:
-		inline := set("-c", "-e", "-E", "-r", "--eval", "-p", "--print", "-m", "-")
-		kind := name
-		flags := scriptValueFlags["default"]
+		kind, ro := name, runners["other"]
 		switch {
 		case strings.HasPrefix(name, "python"):
-			flags, kind = scriptValueFlags["python"], "python"
-			inline = set("-c", "-m", "-")
+			kind, ro = "python", runners["python"]
 		case name == "node" || name == "nodejs":
-			flags, kind = scriptValueFlags["node"], "node"
+			kind, ro = "node", runners["node"]
 		case name == "perl" || name == "ruby" || name == "php":
-			flags = scriptValueFlags[name]
+			ro = runners[name]
 		case name == "deno" || name == "bun":
+			ro = runners[name]
 			// deno run x.ts / bun run x.ts / bun x.ts
 			if len(rest) > 0 && (rest[0].text == "run" || rest[0].text == "x") {
 				rest = rest[1:]
 			}
 		}
-		if p, ok := scriptOperand(rest, flags, inline); ok {
+		if p, ok, unsure := scriptOperand(rest, ro); ok {
 			add(p, kind, "")
+			a.markUncertain(unsure)
 		}
 	case name == "npm" || name == "pnpm" || name == "yarn" || name == "bun":
 		if s, ok := npmScriptName(name, rest); ok {
@@ -194,43 +232,53 @@ func (a *shellAnalyzer) collectScript(args []arg) {
 }
 
 // scriptOperand finds the script operand: the first word that is not an
-// option, skipping the values of options in valueFlags. ok is false when
-// inline code (an inline flag) comes first, or there is no operand.
-func scriptOperand(rest []arg, valueFlags string, inline map[string]bool) (string, bool) {
+// option or an option's value. ok is false when inline code comes first or
+// there is no operand. uncertain is true when an option the runner model
+// does not know came first, so the operand may really be its value.
+func scriptOperand(rest []arg, ro runnerOpts) (op string, ok, uncertain bool) {
 	for i := 0; i < len(rest); i++ {
 		t := rest[i].text
-		if inline[t] {
-			return "", false
+		if ro.inline[t] {
+			return "", false, false
 		}
-		if t == "--" {
+		switch {
+		case t == "--":
 			if i+1 < len(rest) {
-				return rest[i+1].text, true
+				return rest[i+1].text, true, uncertain
 			}
-			return "", false
-		}
-		if strings.HasPrefix(t, "-") && len(t) > 1 {
-			// -o pipefail / -W ignore: the next word is the option's value.
-			if len(t) == 2 && strings.ContainsRune(valueFlags, rune(t[1])) {
+			return "", false, false
+		case strings.HasPrefix(t, "--"):
+			name, _, hasVal := strings.Cut(t, "=")
+			switch {
+			case hasVal || ro.longNoValue[name]:
+			case ro.longValue[name]:
 				i++
+			default:
+				uncertain = true
 			}
-			// Inline code in a cluster (bash -ec '...', python -Bc '...').
-			if !strings.HasPrefix(t, "--") && strings.ContainsAny(t[1:], "ce") && inlineInCluster(t, inline) {
-				return "", false
+		case strings.HasPrefix(t, "-") && len(t) > 1:
+			// A short cluster: options until one takes a value, whose value
+			// is the rest of the word or the next word.
+			for j, r := range t[1:] {
+				o := "-" + string(r)
+				if ro.inline[o] {
+					return "", false, false // bash -ec '...', python -Bc '...'
+				}
+				if strings.ContainsRune(ro.value, r) {
+					if j == len(t)-2 {
+						i++ // value is the next word
+					}
+					break
+				}
+				if !strings.ContainsRune(ro.noValue, r) {
+					uncertain = true
+				}
 			}
-			continue
-		}
-		return t, true
-	}
-	return "", false
-}
-
-func inlineInCluster(t string, inline map[string]bool) bool {
-	for _, r := range t[1:] {
-		if inline["-"+string(r)] {
-			return true
+		default:
+			return t, true, uncertain
 		}
 	}
-	return false
+	return "", false, false
 }
 
 // npmScriptName is the package.json script an npm/pnpm/yarn/bun command
@@ -312,6 +360,12 @@ func deriveScripts(params map[string]any, o Options) Facts {
 			f.opaque("runs a script that could not be inspected (" + label + ": " + e + ")")
 			continue
 		}
+		if secret, _ := m["secret"].(bool); secret {
+			// The gateway does not copy secrets: sourcing or running one is
+			// reading it.
+			f.secretPath(p, "runs or sources secret file "+label)
+			continue
+		}
 		var sf Facts
 		switch scriptKind(p, via, content) {
 		case "shell":
@@ -331,8 +385,11 @@ func deriveScripts(params map[string]any, o Options) Facts {
 	return f
 }
 
-// scriptKind decides how to read a script: by how it is run, then by
-// extension, then by shebang.
+// scriptKind decides how to read a script. An explicit runner (bash x,
+// python x) decides. A file run directly (./x) is run the way the kernel
+// runs it: by its shebang interpreter, matched by exact name, or, with no
+// shebang, by /bin/sh — the extension plays no part. An interpreter the
+// analyzer does not know is "unknown", which is opaque.
 func scriptKind(p, via, content string) string {
 	switch via {
 	case "shell", "npm":
@@ -342,25 +399,40 @@ func scriptKind(p, via, content string) string {
 	case "python", "node", "perl", "ruby", "php", "deno", "bun":
 		return "code"
 	}
-	switch strings.ToLower(path.Ext(slash(p))) {
-	case ".sh", ".bash", ".zsh", ".ksh", ".command":
-		return "shell"
-	case ".ps1":
-		return "powershell"
-	case ".py", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".php":
-		return "code"
+	if via == "exec" && strings.EqualFold(path.Ext(slash(p)), ".ps1") {
+		return "powershell" // PowerShell runs .ps1 by extension
 	}
-	if first, _, _ := strings.Cut(content, "\n"); strings.HasPrefix(first, "#!") {
-		switch {
-		case strings.Contains(first, "pwsh") || strings.Contains(first, "powershell"):
-			return "powershell"
-		case strings.Contains(first, "python") || strings.Contains(first, "node") || strings.Contains(first, "perl") ||
-			strings.Contains(first, "ruby") || strings.Contains(first, "php") || strings.Contains(first, "deno") || strings.Contains(first, "bun"):
-			return "code"
-		case strings.Contains(first, "sh"):
-			return "shell"
+	first, _, _ := strings.Cut(content, "\n")
+	if !strings.HasPrefix(first, "#!") {
+		return "shell" // ENOEXEC: the shell runs it
+	}
+	return shebangKind(first)
+}
+
+// shebangKind maps a "#!" line to how its interpreter reads the file.
+func shebangKind(line string) string {
+	fields := strings.Fields(strings.TrimPrefix(line, "#!"))
+	if len(fields) == 0 {
+		return "shell"
+	}
+	interp := cmdName(fields[0])
+	if interp == "env" {
+		interp = ""
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "-") || strings.Contains(f, "=") {
+				continue // env -S, env FOO=bar
+			}
+			interp = cmdName(f)
+			break
 		}
 	}
-	// No extension, no shebang: the kernel would run it as /bin/sh.
-	return "shell"
+	switch {
+	case shells[interp] && interp != "fish", interp == "ash", interp == "mksh":
+		return "shell"
+	case interp == "pwsh" || interp == "powershell":
+		return "powershell"
+	case interpreters[interp], strings.HasPrefix(interp, "python"), strings.HasPrefix(interp, "node"):
+		return "code" // python3.11, nodejs
+	}
+	return "unknown"
 }

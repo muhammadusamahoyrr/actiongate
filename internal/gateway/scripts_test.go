@@ -67,6 +67,27 @@ func TestAttachScriptsDiscardsCallerValue(t *testing.T) {
 	}
 }
 
+// A secret is never copied into the action: `source .env` attaches no
+// content and is judged a secret read.
+func TestAttachScriptsNeverCopiesSecrets(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, ".env", "API_KEY=sk-live-very-secret\n")
+	params := AttachScripts(map[string]any{"command": "source .env && ./run"}, "Bash", dir)
+	for _, e := range params[facts.ScriptsKey].([]any) {
+		if c, ok := e.(map[string]any)["content"].(string); ok && strings.Contains(c, "sk-live") {
+			t.Fatalf("secret content attached to the action: %v", e)
+		}
+	}
+	if f := facts.Derive("Bash", params); !f.SecretAccess {
+		t.Errorf("source .env not judged a secret read: %+v", f)
+	}
+	// An option the analyzer does not model before the script: opaque.
+	write(t, dir, "x.sh", "echo hi\n")
+	if f := facts.Derive("Bash", AttachScripts(map[string]any{"command": "bash --frobnicate evil.sh x.sh"}, "Bash", dir)); !f.Opaque {
+		t.Errorf("uncertain operand not opaque: %+v", f)
+	}
+}
+
 func TestAttachScriptsLimits(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "big.sh", strings.Repeat("echo hi\n", (maxScriptBytes/8)+10))

@@ -31,6 +31,14 @@ func TestScriptsRun(t *testing.T) {
 		{"PowerShell", `.\setup.ps1; & .\b.ps1`, []Script{{Path: `.\setup.ps1`, Via: "powershell"}, {Path: `.\b.ps1`, Via: "powershell"}}},
 		{"PowerShell", `pwsh -File C:\t\x.ps1`, []Script{{Path: `C:\t\x.ps1`, Via: "powershell"}}},
 
+		// An option the model does not know before the operand: uncertain.
+		{"Bash", "bash --rcfile evil.sh x.sh", []Script{{Path: "x.sh", Via: "shell"}}}, // --rcfile modelled
+		{"Bash", "bash --frobnicate evil.sh x.sh", []Script{{Path: "evil.sh", Via: "shell", Uncertain: true}}},
+		{"Bash", "python3 -Z x.py job.py", []Script{{Path: "x.py", Via: "python", Uncertain: true}}},
+		{"Bash", "node --some-flag a.js", []Script{{Path: "a.js", Via: "node", Uncertain: true}}},
+		{"Bash", "node --no-warnings a.js", []Script{{Path: "a.js", Via: "node"}}},
+		{"Bash", "bash -s x.sh", nil}, // script from stdin; x.sh is an argument
+
 		// Inline shell code that runs a script is followed.
 		{"Bash", `bash -c "bash cleanup.sh"`, []Script{{Path: "cleanup.sh", Via: "shell"}}},
 		{"Bash", `sh -ec "./x.sh"`, []Script{{Path: "./x.sh", Via: "exec"}}},
@@ -90,6 +98,21 @@ func TestDeriveJudgesAttachedScripts(t *testing.T) {
 		{"script that edits the hook", withScript("bash x.sh",
 			map[string]any{"path": "x.sh", "via": "shell", "content": "echo '{}' > .claude/settings.local.json"}),
 			func(f Facts) bool { return f.SelfTamper }},
+		{"exec: shebang beats the extension", withScript("./x.sh",
+			map[string]any{"path": "./x.sh", "via": "exec", "content": "#!/usr/bin/env python3\nimport shutil\nshutil.rmtree('/home/x')\n"}),
+			func(f Facts) bool { return f.Destructive }},
+		{"exec: unknown shebang interpreter is opaque", withScript("./x",
+			map[string]any{"path": "./x", "via": "exec", "content": "#!/usr/bin/awk -f\n{ system(\"rm -rf ~\") }\n"}),
+			func(f Facts) bool { return f.Opaque }},
+		{"exec: env -S shebang", withScript("./x",
+			map[string]any{"path": "./x", "via": "exec", "content": "#!/usr/bin/env -S bash -e\nrm -rf ~\n"}),
+			func(f Facts) bool { return f.Destructive }},
+		{"exec: python3.11 shebang", withScript("./x",
+			map[string]any{"path": "./x", "via": "exec", "content": "#!/usr/bin/python3.11\nprint(open('.env').read())\n"}),
+			func(f Facts) bool { return f.SecretAccess }},
+		{"sourcing a secret is a secret read", withScript("source .env",
+			map[string]any{"path": ".env", "via": "shell", "secret": true}),
+			func(f Facts) bool { return f.SecretAccess }},
 		{"unreadable script is opaque", withScript("bash x.sh",
 			map[string]any{"path": "x.sh", "via": "shell", "error": "does not exist yet"}),
 			func(f Facts) bool { return f.Opaque }},
