@@ -48,6 +48,29 @@ func TestIsActiongateSecretPath(t *testing.T) {
 	}
 }
 
+func TestSelfSecretFollowsSetLocation(t *testing.T) {
+	for _, cmd := range []string{
+		`Set-Location $env:APPDATA\actiongate; Get-Content dev.json`,
+		`cd C:\Users\x\AppData\Roaming; Get-Content actiongate\gateway.json`,
+		`Push-Location ~\.config\actiongate; cat dev.json`,
+	} {
+		if f := Derive("PowerShell", map[string]any{"command": cmd}); !f.SelfSecret {
+			t.Errorf("%s: self_secret=false (%v)", cmd, f.Reasons)
+		}
+	}
+	// Leaving for an absolute path elsewhere ends it.
+	for _, cmd := range []string{
+		`Set-Location $env:APPDATA\actiongate; Set-Location C:\src\app; Get-Content README.md`,
+	} {
+		if f := Derive("PowerShell", map[string]any{"command": cmd}); f.SelfSecret {
+			t.Errorf("%s: self_secret=true after leaving (%v)", cmd, f.Reasons)
+		}
+	}
+	if f := Derive("Bash", map[string]any{"command": "cd ~/.config/actiongate; cd /home/x/src; cat README.md"}); f.SelfSecret {
+		t.Errorf("bash: self_secret after leaving the dir: %v", f.Reasons)
+	}
+}
+
 func TestSelfSecretNeedsARead(t *testing.T) {
 	if f := Derive("Bash", map[string]any{"command": "ls ~/.config/actiongate"}); f.SelfSecret {
 		t.Errorf("listing the directory is not a read: %v", f.Reasons)
@@ -58,6 +81,13 @@ func TestSelfSecretNeedsARead(t *testing.T) {
 		`cat ~/.config/'actiongate'/gateway.json`,
 		`bash -c "cat ~/.config/actiongate/dev.json"`,
 		`python3 -c "print(open('/home/x/.config/actiongate/dev.json').read())"`,
+		// cwd-relative reads after entering the config directory
+		"cd ~/.config/actiongate && cat dev.json",
+		"cd /home/x/.config && cat actiongate/gateway.json",
+		`cd "$APPDATA/actiongate"; head -c 200 gateway.json`,
+		"cd ~/.config/actiongate && grep -r seed .",
+		"pushd ~/.config/actiongate && tar czf /tmp/x.tgz pgdata",
+		"cd ~/.config/actiongate && wc -c < dev.json",
 	} {
 		if f := Derive("Bash", map[string]any{"command": cmd}); !f.SelfSecret || !f.SecretAccess {
 			t.Errorf("%s: self_secret=%v secret=%v (%v)", cmd, f.SelfSecret, f.SecretAccess, f.Reasons)

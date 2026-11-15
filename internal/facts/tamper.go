@@ -237,6 +237,17 @@ func (a *shellAnalyzer) tamperArgs(name string, rest []arg) {
 			}
 		}
 		a.cwd.cd(target, literal)
+		if literal && isAbsPath(target) {
+			a.cwdSecret = false // left it for a known place; re-checked below
+		}
+		// Entering actiongate's config directory — by any spelling,
+		// including an unreadable variable ($APPDATA/actiongate) — makes
+		// relative reads after it reads of its secrets.
+		for _, r := range []string{target, a.cwd.dir} {
+			if r != "" && r != unknownDir && IsActiongateSecretPath(r) {
+				a.cwdSecret, a.cwdSecretDir = true, slash(r)
+			}
+		}
 		return
 	}
 	hit := func(why string) { a.f.selfTamper(name + " " + why) }
@@ -427,8 +438,28 @@ var psNetWriters = []string{"writealltext", "writeallbytes", "writealllines", "a
 	"::delete", "::move", "::copy", "::replace", "::create", "openwrite", "streamwriter", "setaccesscontrol"}
 
 // psTamperState carries the working directory across the statements of one
-// PowerShell command.
-type psTamperState struct{ cwd cwdTracker }
+// PowerShell command. cwdSecret: a Set-Location entered actiongate's
+// config directory (cwdSecretDir), so relative reads after it are reads
+// of its secrets.
+type psTamperState struct {
+	cwd          cwdTracker
+	cwdSecret    bool
+	cwdSecretDir string
+}
+
+// secretOperand is the PowerShell twin of shellAnalyzer.secretOperand: an
+// operand is judged on the path it names after Set-Location.
+func (st *psTamperState) secretOperand(a string, copying bool) (string, bool) {
+	for _, r := range st.cwd.resolve(a) {
+		if IsSecretPath(r) || isSecretDir(r) && copying || strings.ContainsAny(r, "*?") && globMatchesSecret(r) {
+			return r, true
+		}
+	}
+	if st.cwdSecret && a != "" && !isAbsPath(a) && !strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "$") {
+		return st.cwdSecretDir + "/" + slash(a), true
+	}
+	return "", false
+}
 
 // psCandidates turns one token into the paths it may hold: a -Name:value
 // parameter loses its prefix (a bare -Name holds no path), and
@@ -489,7 +520,16 @@ func (st *psTamperState) statement(toks []string) (string, bool) {
 		u := strings.Trim(t, `"'`)
 		if location {
 			if c := psCandidates(t); len(c) > 0 {
-				st.cwd.cd(c[0], !strings.ContainsAny(c[0], "$("))
+				literal := !strings.ContainsAny(c[0], "$(")
+				st.cwd.cd(c[0], literal)
+				if literal && isAbsPath(c[0]) {
+					st.cwdSecret = false
+				}
+				for _, r := range []string{c[0], st.cwd.dir} {
+					if r != "" && r != unknownDir && IsActiongateSecretPath(r) {
+						st.cwdSecret, st.cwdSecretDir = true, slash(r)
+					}
+				}
 				location = false
 			}
 			continue
