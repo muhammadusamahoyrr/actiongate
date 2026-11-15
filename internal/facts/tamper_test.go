@@ -58,16 +58,24 @@ func TestSelfSecretFollowsSetLocation(t *testing.T) {
 			t.Errorf("%s: self_secret=false (%v)", cmd, f.Reasons)
 		}
 	}
-	// Leaving for an absolute path elsewhere ends it.
-	for _, cmd := range []string{
-		`Set-Location $env:APPDATA\actiongate; Set-Location C:\src\app; Get-Content README.md`,
+	// Variable/expression operands may name the current directory, and a
+	// later move away is never trusted (popd / cd - / subshells can come
+	// back): both fail closed.
+	for _, c := range []struct{ tool, cmd string }{
+		{"PowerShell", `Set-Location $env:APPDATA\actiongate; Get-Content $PWD\dev.json`},
+		{"PowerShell", `Set-Location $env:APPDATA\actiongate; Get-Content (Get-Location)\gateway.json`},
+		{"PowerShell", `Push-Location $env:APPDATA\actiongate; Set-Location C:\src; Pop-Location; Get-Content dev.json`},
+		{"Bash", `cd ~/.config/actiongate && cat "$PWD/dev.json"`},
+		{"Bash", "pushd ~/.config/actiongate; cd /tmp; popd; cat dev.json"},
+		{"Bash", "cd ~/.config/actiongate; cd -; cd -; cat dev.json"},
 	} {
-		if f := Derive("PowerShell", map[string]any{"command": cmd}); f.SelfSecret {
-			t.Errorf("%s: self_secret=true after leaving (%v)", cmd, f.Reasons)
+		if f := Derive(c.tool, map[string]any{"command": c.cmd}); !f.SelfSecret {
+			t.Errorf("%s %s: self_secret=false (%v)", c.tool, c.cmd, f.Reasons)
 		}
 	}
-	if f := Derive("Bash", map[string]any{"command": "cd ~/.config/actiongate; cd /home/x/src; cat README.md"}); f.SelfSecret {
-		t.Errorf("bash: self_secret after leaving the dir: %v", f.Reasons)
+	// Commands that never enter the directory are untouched.
+	if f := Derive("Bash", map[string]any{"command": "cd /home/x/src && cat README.md"}); f.SelfSecret {
+		t.Errorf("unrelated cd: %v", f.Reasons)
 	}
 }
 

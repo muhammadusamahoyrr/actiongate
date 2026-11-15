@@ -237,9 +237,9 @@ func (a *shellAnalyzer) tamperArgs(name string, rest []arg) {
 			}
 		}
 		a.cwd.cd(target, literal)
-		if literal && isAbsPath(target) {
-			a.cwdSecret = false // left it for a known place; re-checked below
-		}
+		// cwdSecret is never cleared within one command line: popd, cd -
+		// and subshells can return to the config directory, and the
+		// analyzer cannot scope them. Over-reporting is the safe side.
 		// Entering actiongate's config directory — by any spelling,
 		// including an unreadable variable ($APPDATA/actiongate) — makes
 		// relative reads after it reads of its secrets.
@@ -455,7 +455,9 @@ func (st *psTamperState) secretOperand(a string, copying bool) (string, bool) {
 			return r, true
 		}
 	}
-	if st.cwdSecret && a != "" && !isAbsPath(a) && !strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "$") {
+	// A variable or expression operand ($PWD\dev.json, (Get-Location)\x)
+	// may name the current directory: fail closed.
+	if st.cwdSecret && a != "" && !isAbsPath(a) && !strings.HasPrefix(a, "-") {
 		return st.cwdSecretDir + "/" + slash(a), true
 	}
 	return "", false
@@ -521,10 +523,7 @@ func (st *psTamperState) statement(toks []string) (string, bool) {
 		if location {
 			if c := psCandidates(t); len(c) > 0 {
 				literal := !strings.ContainsAny(c[0], "$(")
-				st.cwd.cd(c[0], literal)
-				if literal && isAbsPath(c[0]) {
-					st.cwdSecret = false
-				}
+				st.cwd.cd(c[0], literal) // cwdSecret is never cleared (see tamperArgs)
 				for _, r := range []string{c[0], st.cwd.dir} {
 					if r != "" && r != unknownDir && IsActiongateSecretPath(r) {
 						st.cwdSecret, st.cwdSecretDir = true, slash(r)
