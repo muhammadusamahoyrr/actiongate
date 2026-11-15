@@ -69,6 +69,7 @@ func TestMaskNeverHidesExecutableText(t *testing.T) {
 // The text around a masked value must be preserved exactly: dropping a
 // pipe or a semicolon would show the approver a different command.
 func TestMaskPreservesTheCommandAroundSecrets(t *testing.T) {
+	//nolint:gosec // G101: fake credentials, the input to the masking under test
 	for in, want := range map[string]string{
 		"TOKEN=abc123|sh":             "TOKEN=[credential hidden]|sh",
 		"TOKEN=abc123; rm -rf ~":      "TOKEN=[credential hidden]; rm -rf ~",
