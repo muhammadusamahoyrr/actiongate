@@ -20,8 +20,12 @@ func powerShellDepth(cmd string, depth int) Facts {
 		f.opaque("nested code deeper than the analyzer follows")
 		return f
 	}
+	var tamper psTamperState // carries Set-Location across statements
 	for _, stmt := range strings.FieldsFunc(cmd, func(r rune) bool { return r == ';' || r == '\n' }) {
 		f.merge(psStatement(stmt, depth))
+		if why, ok := tamper.statement(psTokens(stmt)); ok {
+			f.selfTamper(why)
+		}
 	}
 	return f
 }

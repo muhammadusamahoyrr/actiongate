@@ -127,7 +127,45 @@ install):
 - a **SessionStart** hook — warns loudly at session start if the control
   plane is down (because governed tools fail closed).
 
-The hooks take effect in **new** Claude Code sessions.
+Claude Code watches its settings files, so the hooks normally apply to
+running sessions as well; start a new session if one does not pick them up.
+
+#### Make the hook tamper-resistant (recommended)
+
+A project-level hook lives in a file the agent itself can edit, and Claude
+Code applies hook edits live, so a misbehaving agent could remove its own
+hook (the `self_tamper` rule makes it ask first, but that rule is pattern
+matching). For a hook the agent **cannot** remove, install it machine-wide
+once, from an elevated terminal (Windows: *Run as administrator*;
+macOS/Linux: `sudo`):
+
+```bash
+actiongate protect claude-code -managed               # hook for every session
+actiongate protect claude-code -managed -exclusive    # also block all other hooks
+```
+
+This copies `ag-hook` and `gateway` into an admin-only directory
+(`C:\Program Files\actiongate`, `/usr/local/lib/actiongate`) and writes the
+hook into Claude Code's managed settings
+(`C:\Program Files\ClaudeCode\managed-settings.json`,
+`/Library/Application Support/ClaudeCode/managed-settings.json`,
+`/etc/claude-code/managed-settings.json`). User, project and local settings
+cannot remove a managed hook, and a user-level `disableAllHooks` cannot
+switch it off. The hook runs `ag-hook -locked`, which ignores the
+environment overrides (`AG_HOOK_GATEWAY`, `AG_HOOK_AGENT`, `APPDATA`) a
+settings file could inject. `-exclusive` also sets `allowManagedHooksOnly`,
+which blocks every user, project, local and plugin hook: stricter, but it
+disables any other hooks you rely on.
+
+Then, as your normal user, run `actiongate protect claude-code` in each
+project as above: it applies the policy pack and, seeing the managed hook,
+removes the now-redundant project hook instead of adding one (so checks do
+not run twice). `actiongate doctor` reports which kind of hook you have and
+fails if the managed files are writable by you.
+
+Limits: an agent running as a local administrator can edit managed
+settings too. `gateway.json` (enrollment and receipts) stays in your
+profile, protected by the `self_tamper` rule rather than file permissions.
 
 ### Step 3 — see it work
 
@@ -186,8 +224,13 @@ A policy is JSON: a `default_decision` plus an ordered list of rules.
 - **`facts`** are booleans ActionGate derives by parsing the call
   (`internal/facts`): `facts.destructive` (bulk delete, history rewrite,
   destructive SQL), `facts.secret_access` (reads, copies or sends a
-  credential file) and `facts.opaque` (code that cannot be inspected:
-  `eval`, a pipe into a shell, encoded PowerShell). They cover Bash,
+  credential file), `facts.opaque` (code that cannot be inspected:
+  `eval`, a pipe into a shell, encoded PowerShell) and `facts.self_tamper`
+  (writes, moves or deletes a file ActionGate's own enforcement depends on:
+  `.claude/settings*.json`, `ag-hook`, `gateway.json`, the dev install's
+  `dev.json`, or the `.claude` / actiongate config directory itself;
+  relative paths are resolved through `cd`/`Set-Location`; reading them is
+  not tamper). They cover Bash,
   PowerShell and the file tools; every key is always present, so no `has()`
   guard is needed. Prefer facts over `params.command.contains(...)`: text
   matching misses `rm -fr`, `rm -r -f` and `bash -c '...'`

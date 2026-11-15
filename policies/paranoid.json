@@ -16,6 +16,13 @@
       "risk_classification": "secrets"
     },
     {
+      "id": "deny-self-tamper",
+      "description": "Block the agent from changing actiongate's own enforcement (hook settings, ag-hook, gateway state, dev.json)",
+      "condition": "facts.self_tamper",
+      "decision": "deny",
+      "risk_classification": "self_tamper"
+    },
+    {
       "id": "approve-all-bash",
       "description": "Every shell command waits for a human",
       "condition": "tool_name == \"Bash\" && has(params.command)",

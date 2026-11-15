@@ -50,8 +50,12 @@ func cmdUp(args []string) int {
 	// External Postgres (escape hatch) vs the managed embedded cluster (default).
 	if *dbURLFlag != "" {
 		if *dbURLFlag != cfg.DatabaseURL {
-			cfg.DatabaseURL = *dbURLFlag
-			if err := saveDevConfig(cfg, cfgPath); err != nil {
+			err := updateDevConfig(cfgPath, cfg, func(c *devConfig) (bool, error) {
+				changed := c.DatabaseURL != *dbURLFlag
+				c.DatabaseURL = *dbURLFlag
+				return changed, nil
+			})
+			if err != nil {
 				fmt.Fprintln(os.Stderr, "up:", err)
 				return 1
 			}
@@ -231,8 +235,17 @@ func ensureTenant(ctx context.Context, pool *pgxpool.Pool, cfg *devConfig, cfgPa
 		if err != nil {
 			return false, err
 		}
-		cfg.TenantID = id.String()
-		return true, saveDevConfig(cfg, cfgPath)
+		// Another process (the service, a second `up`) may have recorded a
+		// tenant meanwhile: keep the one on disk so everyone agrees. The
+		// tenant created here is then unused, which is harmless.
+		err = updateDevConfig(cfgPath, cfg, func(c *devConfig) (bool, error) {
+			if c.TenantID != "" {
+				return false, nil
+			}
+			c.TenantID = id.String()
+			return true, nil
+		})
+		return cfg.TenantID == id.String(), err
 	}
 	tenantID, err := uuid.Parse(cfg.TenantID)
 	if err != nil {

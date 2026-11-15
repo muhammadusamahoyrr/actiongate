@@ -33,43 +33,50 @@ func startManagedDB(ctx context.Context, cfg *devConfig, cfgPath string) (*dbrun
 
 // newManagedDB builds the runtime for the managed cluster and persists its
 // port, password and DSN in dev.json, without starting it.
+//
+// The port and password are decided under the dev.json lock, against the
+// freshest file: two first starts at once (`up` racing the background
+// task) must not each invent a password and leave the cluster initialised
+// with one while dev.json holds the other.
 func newManagedDB(cfg *devConfig, cfgPath string) (*dbruntime.Embedded, error) {
-	changed := false
-	if cfg.DBPassword == "" {
-		pw, err := dbruntime.GeneratePassword()
-		if err != nil {
-			return nil, err
-		}
-		cfg.DBPassword = pw
-		changed = true
-	}
-
 	dataDir := filepath.Join(filepath.Dir(cfgPath), "pgdata")
-	rt, err := dbruntime.New(dbruntime.Config{
-		DataPath: dataDir,
-		Port:     uint32(cfg.DBPort), //nolint:gosec // G115: a DB port is bounded 0-65535
+	var rt *dbruntime.Embedded
+	err := updateDevConfig(cfgPath, cfg, func(c *devConfig) (bool, error) {
+		changed := false
+		if c.DBPassword == "" {
+			pw, err := dbruntime.GeneratePassword()
+			if err != nil {
+				return false, err
+			}
+			c.DBPassword = pw
+			changed = true
+		}
+		r, err := dbruntime.New(dbruntime.Config{
+			DataPath: dataDir,
+			Port:     uint32(c.DBPort), //nolint:gosec // G115: a DB port is bounded 0-65535
 
-		Database: "actiongate",
-		Username: "ag",
-		Password: cfg.DBPassword,
-		Version:  version,
+			Database: "actiongate",
+			Username: "ag",
+			Password: c.DBPassword,
+			Version:  version,
+		})
+		if err != nil {
+			return false, err
+		}
+		rt = r
+		if c.DBPort == 0 {
+			c.DBPort = int(r.Port())
+			changed = true
+		}
+		// The managed cluster is the source of truth for DatabaseURL.
+		if c.DatabaseURL != r.DSN() {
+			c.DatabaseURL = r.DSN()
+			changed = true
+		}
+		return changed, nil
 	})
 	if err != nil {
 		return nil, err
-	}
-	if cfg.DBPort == 0 {
-		cfg.DBPort = int(rt.Port())
-		changed = true
-	}
-	// The managed cluster is the source of truth for DatabaseURL.
-	if cfg.DatabaseURL != rt.DSN() {
-		cfg.DatabaseURL = rt.DSN()
-		changed = true
-	}
-	if changed {
-		if err := saveDevConfig(cfg, cfgPath); err != nil {
-			return nil, err
-		}
 	}
 	return rt, nil
 }

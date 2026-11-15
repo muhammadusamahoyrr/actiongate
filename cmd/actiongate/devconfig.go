@@ -49,54 +49,104 @@ func devConfigPath() (string, error) {
 // loadOrInitDevConfig reads the saved environment or creates one with fresh
 // random secrets. Missing fields on an existing file (older versions) are
 // filled in and saved back.
+//
+// It runs under the dev.json lock: two first runs at once (`actiongate up`
+// racing the service) must agree on one set of secrets, not each generate
+// their own and let the last save win.
 func loadOrInitDevConfig() (*devConfig, string, error) {
 	path, err := devConfigPath()
 	if err != nil {
 		return nil, "", err
 	}
 	cfg := &devConfig{}
-	if raw, err := os.ReadFile(filepath.Clean(path)); err == nil {
-		if err := json.Unmarshal(raw, cfg); err != nil {
-			return nil, "", fmt.Errorf("corrupt dev config %s: %w", path, err)
+	err = fsutil.WithLock(path, func() error {
+		disk, err := readDevConfig(path)
+		if err != nil {
+			return err
 		}
-	} else if !os.IsNotExist(err) {
+		if disk != nil {
+			cfg = disk
+		}
+		if fillDevDefaults(cfg) {
+			return writeDevConfig(cfg, path)
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, "", err
-	}
-
-	changed := false
-	if cfg.DatabaseURL == "" {
-		cfg.DatabaseURL = "postgres://ag:ag@localhost:5432/actiongate?sslmode=disable"
-		changed = true
-	}
-	if cfg.Listen == "" {
-		cfg.Listen = ":8091"
-		changed = true
-	}
-	if cfg.ServerURL == "" {
-		cfg.ServerURL = "http://localhost:8091"
-		changed = true
-	}
-	if cfg.TokenSecret == "" {
-		cfg.TokenSecret = randomB64(32)
-		changed = true
-	}
-	if cfg.GrantKeySeed == "" {
-		cfg.GrantKeySeed = randomB64(32)
-		changed = true
-	}
-	if cfg.EpochKeySeed == "" {
-		cfg.EpochKeySeed = randomB64(32)
-		changed = true
-	}
-	if changed {
-		if err := saveDevConfig(cfg, path); err != nil {
-			return nil, "", err
-		}
 	}
 	return cfg, path, nil
 }
 
-func saveDevConfig(cfg *devConfig, path string) error {
+// fillDevDefaults sets every missing field and reports whether it changed
+// anything.
+func fillDevDefaults(cfg *devConfig) bool {
+	changed := false
+	set := func(field *string, value func() string) {
+		if *field == "" {
+			*field = value()
+			changed = true
+		}
+	}
+	set(&cfg.DatabaseURL, func() string { return "postgres://ag:ag@localhost:5432/actiongate?sslmode=disable" })
+	set(&cfg.Listen, func() string { return ":8091" })
+	set(&cfg.ServerURL, func() string { return "http://localhost:8091" })
+	set(&cfg.TokenSecret, func() string { return randomB64(32) })
+	set(&cfg.GrantKeySeed, func() string { return randomB64(32) })
+	set(&cfg.EpochKeySeed, func() string { return randomB64(32) })
+	return changed
+}
+
+// updateDevConfig changes dev.json without losing another process's
+// update. Under the dev.json lock it re-reads the file, lets fn change the
+// fresh copy (fn returns whether it changed anything), and writes it back.
+// On success *mem is replaced with what is on disk, so the caller also sees
+// fields other processes set (and keeps theirs when fn defers to them).
+//
+// Never save a long-held in-memory copy with a plain write: that silently
+// reverts whatever changed on disk since it was loaded.
+func updateDevConfig(path string, mem *devConfig, fn func(c *devConfig) (bool, error)) error {
+	return fsutil.WithLock(path, func() error {
+		cur, err := readDevConfig(path)
+		if err != nil {
+			return err
+		}
+		if cur == nil {
+			copied := *mem
+			cur = &copied
+		}
+		changed, err := fn(cur)
+		if err != nil {
+			return err
+		}
+		if changed {
+			if err := writeDevConfig(cur, path); err != nil {
+				return err
+			}
+		}
+		*mem = *cur
+		return nil
+	})
+}
+
+// readDevConfig returns the parsed file, or nil if it does not exist.
+func readDevConfig(path string) (*devConfig, error) {
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	cfg := &devConfig{}
+	if err := json.Unmarshal(raw, cfg); err != nil {
+		return nil, fmt.Errorf("corrupt dev config %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// writeDevConfig assumes the caller holds the dev.json lock.
+func writeDevConfig(cfg *devConfig, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("config dir: %w", err)
 	}

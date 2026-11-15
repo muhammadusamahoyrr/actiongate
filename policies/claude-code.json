@@ -9,6 +9,13 @@
       "risk_classification": "secrets"
     },
     {
+      "id": "approve-self-tamper",
+      "description": "Require human approval before the agent changes actiongate's own enforcement: the Claude Code hook settings, ag-hook, gateway state or dev.json",
+      "condition": "facts.self_tamper",
+      "decision": "requires_approval",
+      "risk_classification": "self_tamper"
+    },
+    {
       "id": "approve-destructive",
       "description": "Require human approval for bulk deletes, history rewrites and destructive SQL, however the command is spelled",
       "condition": "facts.destructive",

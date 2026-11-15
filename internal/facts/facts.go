@@ -31,6 +31,10 @@ type Facts struct {
 	// getattr, __import__, join, chr), which pattern inspection cannot
 	// see through. Kept apart from Opaque so a pack can choose the trade-off.
 	InlineDynamic bool
+	// SelfTamper: the action writes, moves or deletes a file actiongate's
+	// own enforcement depends on (the Claude Code hook settings, ag-hook,
+	// gateway state, dev.json). See tamper.go.
+	SelfTamper bool
 	// Reasons explains each fact that is true, for the audit trail.
 	Reasons []string
 }
@@ -44,6 +48,7 @@ func (f Facts) Map() map[string]bool {
 		"secret_access":  f.SecretAccess,
 		"opaque":         f.Opaque,
 		"inline_dynamic": f.InlineDynamic,
+		"self_tamper":    f.SelfTamper,
 	}
 }
 
@@ -81,6 +86,7 @@ func (f *Facts) merge(o Facts) {
 	f.SecretAccess = f.SecretAccess || o.SecretAccess
 	f.Opaque = f.Opaque || o.Opaque
 	f.InlineDynamic = f.InlineDynamic || o.InlineDynamic
+	f.SelfTamper = f.SelfTamper || o.SelfTamper
 	for _, r := range o.Reasons {
 		f.add(r)
 	}
@@ -133,13 +139,16 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 		f = ShellWith(str("command"), o)
 	case "PowerShell":
 		f = PowerShell(str("command"))
-	case "Read", "Edit", "Write", "NotebookEdit":
+	case "Read", "Edit", "MultiEdit", "Write", "NotebookEdit":
 		p := str("file_path")
 		if p == "" {
 			p = str("notebook_path")
 		}
 		if IsSecretPath(p) {
 			f.secret("file tool on secret path " + path.Base(slash(p)))
+		}
+		if tool != "Read" && IsControlPath(p) {
+			f.selfTamper(tool + " on actiongate control file " + path.Base(slash(p)))
 		}
 	case "read_file":
 		if p := str("path"); IsSecretPath(p) {
@@ -152,8 +161,44 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 		if g := str("glob"); g != "" && globMatchesSecret(g) {
 			f.secret("grep glob covers secret files: " + g)
 		}
+	case "Glob", "LS", "WebFetch", "WebSearch", "TodoWrite":
+		// Read-only, or no file operand.
+	default:
+		// A tool we do not know (a new built-in, an MCP write_file, ...):
+		// assume it may write any path it is given, under any key and at
+		// any depth (edits: [{path: ...}]).
+		if p, ok := findString(params, 0, func(s string) bool { return IsControlPath(s) || IsControlDir(s) }); ok {
+			f.selfTamper(tool + " on actiongate control path " + path.Base(slash(p)))
+		}
 	}
 	return f
+}
+
+// findString returns the first string anywhere in v (maps, slices, nested)
+// that match accepts. Depth is bounded so a hostile payload cannot recurse
+// without end, and nesting past the bound counts as a match (fail closed):
+// otherwise burying a path one level deeper would hide it.
+func findString(v any, depth int, match func(string) bool) (string, bool) {
+	if depth > 8 {
+		return "(nested too deeply to inspect)", true
+	}
+	switch x := v.(type) {
+	case string:
+		return x, match(x)
+	case map[string]any:
+		for _, e := range x {
+			if s, ok := findString(e, depth+1, match); ok {
+				return s, true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if s, ok := findString(e, depth+1, match); ok {
+				return s, true
+			}
+		}
+	}
+	return "", false
 }
 
 // secretNames are probes for glob arguments: a pattern that would match any

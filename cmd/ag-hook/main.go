@@ -3,7 +3,8 @@
 // passing the call as JSON on stdin. We turn that into a `gateway check` and
 // translate the verdict back into Claude Code's hook contract:
 //
-//	allowed            -> exit 0, no output   (Claude Code proceeds normally)
+//	allowed            -> exit 0, no output   (Claude Code proceeds normally;
+//	                      gateway warnings go to stderr and ag-hook.log)
 //	denied             -> exit 2 + reason     (Claude Code blocks, model sees why)
 //	requires_approval  -> gateway blocks until a human decides, then as above
 //	anything uncertain -> exit 2 (fail closed; the action does NOT run)
@@ -22,6 +23,10 @@
 //	AG_HOOK_WAIT     how long to block on approval, Go duration (default "5m")
 //	AG_HOOK_GATEWAY  path to the gateway binary (default: next to this binary)
 //	AG_HOOK_SERVER   control-plane URL for -warn (default: enrolled server)
+//
+// With -locked (the admin-installed managed hook), AG_HOOK_AGENT and
+// AG_HOOK_GATEWAY are ignored and the gateway state path comes from the OS
+// profile, because the governed agent can set hook env vars via settings.
 package main
 
 import (
@@ -69,6 +74,34 @@ func block(reason string) {
 	os.Exit(2)
 }
 
+// maxHookLog bounds ag-hook.log; past it the log is rotated to .1.
+const maxHookLog = 1 << 20
+
+// recordWarning surfaces a non-blocking gateway warning: on stderr (Claude
+// Code shows a successful hook's stderr in its transcript view) and appended
+// to ag-hook.log in the actiongate config dir, so it survives the session.
+// It never fails the hook: the action was allowed.
+func recordWarning(msg string) {
+	fmt.Fprintln(os.Stderr, "actiongate warning:", msg)
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, "actiongate", "ag-hook.log")
+	if fi, err := os.Stat(path); err == nil && fi.Size() > maxHookLog {
+		_ = os.Rename(path, path+".1")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format(time.RFC3339), strings.ReplaceAll(msg, "\n", " | "))
+}
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -76,8 +109,17 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// overridable is envOr for settings that change WHO is governed or BY
+// WHAT: ignored when locked.
+func overridable(key, fallback string) string {
+	if locked {
+		return fallback
+	}
+	return envOr(key, fallback)
+}
+
 func gatewayPath() (string, error) {
-	if p := os.Getenv("AG_HOOK_GATEWAY"); p != "" {
+	if p := os.Getenv("AG_HOOK_GATEWAY"); p != "" && !locked {
 		return p, nil
 	}
 	self, err := os.Executable()
@@ -123,8 +165,25 @@ CLOSED (blocked) until it is back. Fix: 'actiongate service status', then
 `, serverURL)
 }
 
+// locked is set by -locked, which `actiongate protect -managed` puts in the
+// admin-owned managed hook. Claude Code settings can set environment
+// variables for hooks, so the governed agent could point AG_HOOK_GATEWAY at
+// a no-op or APPDATA at a forged gateway state. Locked, ag-hook ignores
+// those overrides: the gateway is always the sibling binary (admin-only
+// install dir) and the state path comes from the OS profile, not env.
+var locked bool
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "-warn" {
+	warnMode := false
+	for _, a := range os.Args[1:] {
+		switch a {
+		case "-warn":
+			warnMode = true
+		case "-locked":
+			locked = true
+		}
+	}
+	if warnMode {
 		warn()
 		os.Exit(0)
 	}
@@ -164,17 +223,25 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), waitDur+checkSlack)
 	defer cancel()
-	// #nosec G204 -- gw is the sibling gateway binary (or the operator's
-	// explicit AG_HOOK_GATEWAY override); invoking it is this bridge's
-	// entire purpose.
-	cmd := exec.CommandContext(ctx, gw, "check",
-		"-agent", envOr("AG_HOOK_AGENT", "claude-code"),
+	checkArgs := []string{"check",
+		"-agent", overridable("AG_HOOK_AGENT", "claude-code"),
 		"-session", session,
 		"-request-id", uuid.NewString(),
 		"-tool", in.ToolName,
 		"-params", "-", // on stdin: a Write of a large file exceeds the OS argument limit
 		"-wait", wait,
-	)
+	}
+	if locked {
+		state, err := profileStatePath()
+		if err != nil {
+			block("actiongate: cannot locate the gateway state from the OS profile; failing closed")
+		}
+		checkArgs = append(checkArgs, "-state", state)
+	}
+	// #nosec G204 -- gw is the sibling gateway binary (or, unlocked, the
+	// operator's explicit AG_HOOK_GATEWAY override); invoking it is this
+	// bridge's entire purpose.
+	cmd := exec.CommandContext(ctx, gw, checkArgs...)
 	cmd.Stdin = strings.NewReader(params)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -197,7 +264,13 @@ func main() {
 
 	switch code {
 	case 0:
-		os.Exit(0) // allowed — let Claude Code's normal flow continue
+		// Allowed. Anything the gateway still wrote to stderr is a problem
+		// that did not change the verdict — most importantly a failed state
+		// save. Those used to be dropped here, which made them invisible.
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			recordWarning(msg)
+		}
+		os.Exit(0) // let Claude Code's normal flow continue
 	case 2:
 		reason := res.Explanation
 		if reason == "" {

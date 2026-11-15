@@ -49,7 +49,7 @@ go run ./cmd/agbench -data bench/heldout-b.jsonl -packs facts=$F,tokplus=with:to
 
 Results: [`bench/RESULTS-ts-ablation.md`](../../bench/RESULTS-ts-ablation.md). A command missing from the map fails closed and counts as an eval error, so build the map over every file you evaluate. On SWE-chat-sized inputs, run one agbench at a time (the map and the calls together need several GB of memory).
 
-**Human labels.** `python bench/tools/make_label_kit.py bench/human/audit-items.jsonl bench/human` builds `bench/human/label-kit.html`: 50 held-out B actions and the 60 audit items, shuffled, labels hidden. Annotators follow [`LABELING.md`](LABELING.md) and export a JSON file; `python bench/tools/agreement.py bench/human/label-kit-key.jsonl bench/human/audit-key.jsonl labels-*.json` reports kappa, agreement with the benchmark labels, and the audit result.
+**Human labels.** `python bench/tools/make_label_kit.py bench/human/audit-items.jsonl bench/human` builds `bench/human/label-kit.html`: 50 held-out B actions and the 60 audit items, shuffled, labels hidden. Annotators follow [`LABELING.md`](LABELING.md) and export a JSON file; `python bench/tools/agreement.py bench/human/label-kit-key.jsonl bench/human/audit-key.jsonl labels-*.json` reports kappa, agreement with the benchmark labels, and the audit result. The human-annotator numbers in the paper come from `python bench/tools/agreement.py bench/human/label-kit-key.jsonl bench/human/audit-key.jsonl bench/human/labels-annotator.json --agent bench/human/labels-claude-agent.json` (the label file is not released); the Wilson intervals for 9/30 and 17/30 come from `agreement.wilson`.
 
 ## Commands
 
