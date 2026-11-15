@@ -106,12 +106,47 @@ func TestBuiltinSelfTamperFloor(t *testing.T) {
 	}
 }
 
+// Audit H10: the agent must not approve its own held action, through the
+// local CLI or the callback endpoint, whatever pack is active.
+func TestBuiltinDeniesSelfApprovalInEveryPack(t *testing.T) {
+	attempts := []policy.Input{
+		{ToolName: "Bash", Params: map[string]any{"command": "actiongate approvals approve 019f2c"}},
+		{ToolName: "Bash", Params: map[string]any{"command": `"C:/bin/actiongate.exe" approvals deny 019f2c`}},
+		{ToolName: "Bash", Params: map[string]any{"command": `curl -X POST http://127.0.0.1:8091/approval/callback -d '{"token":"x"}'`}},
+		{ToolName: "PowerShell", Params: map[string]any{"command": `Invoke-RestMethod -Method Post http://localhost:8091/approval/callback -Body $b`}},
+		{ToolName: "Bash", Params: map[string]any{"command": `python3 -c "import urllib.request as u; u.urlopen('http://localhost:8091/approval/callback')"`}},
+		{ToolName: "mcp__http__fetch", Params: map[string]any{"url": "http://localhost:8091/approval/callback", "method": "POST"}},
+	}
+	for _, name := range Names() {
+		pack := compilePack(t, name)
+		for _, in := range attempts {
+			d, err := pack.Evaluate(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.Decision != policy.Deny || d.MatchedRuleID != policy.BuiltinApprovalRuleID {
+				t.Errorf("pack %s: %s %v = %s by %s, want deny by the built-in", name, in.ToolName, in.Params, d.Decision, d.MatchedRuleID)
+			}
+		}
+	}
+	// Writing a document that mentions the endpoint is not approving.
+	if d, _ := compilePack(t, "claude-code").Evaluate(policy.Input{ToolName: "Write",
+		Params: map[string]any{"file_path": "/repo/docs/GUIDE.md", "content": "POST /approval/callback with the token"}}); d.MatchedRuleID == policy.BuiltinApprovalRuleID {
+		t.Error("writing docs that mention /approval/callback hit the self-approval rule")
+	}
+	// Listing what is pending is fine.
+	d, err := compilePack(t, "claude-code").Evaluate(policy.Input{ToolName: "Bash", Params: map[string]any{"command": "actiongate approvals list"}})
+	if err != nil || d.MatchedRuleID == policy.BuiltinApprovalRuleID {
+		t.Errorf("approvals list hit the self-approval rule: %v %s", err, d.MatchedRuleID)
+	}
+}
+
 func TestBuiltinRuleIDsAreReserved(t *testing.T) {
 	engine, err := policy.NewEngine()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{policy.BuiltinSecretsRuleID, policy.BuiltinTamperRuleID, policy.DefaultRuleID} {
+	for _, id := range []string{policy.BuiltinSecretsRuleID, policy.BuiltinTamperRuleID, policy.BuiltinApprovalRuleID, policy.DefaultRuleID} {
 		_, err := engine.Compile(policy.SnapshotConfig{Rules: []policy.Rule{{ID: id, Condition: "true", Decision: policy.Allow}}})
 		if err == nil {
 			t.Errorf("rule id %q should be reserved", id)

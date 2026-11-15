@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/slack-go/slack"
 )
@@ -31,7 +32,7 @@ func (p SlackPort) Send(ctx context.Context, msg Message) error {
 	blocks := []slack.Block{
 		slack.NewHeaderBlock(slack.NewTextBlockObject(slack.PlainTextType, msg.Title, false, false)),
 		slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, msg.Body, false, false), nil, nil),
+			slack.NewTextBlockObject(slack.MarkdownType, slackEscape(msg.Body), false, false), nil, nil),
 		slack.NewContextBlock("",
 			slack.NewTextBlockObject(slack.MarkdownType,
 				fmt.Sprintf("action `%s` · approver `%s`", msg.ActionID, msg.ApproverTarget), false, false)),
@@ -53,4 +54,11 @@ func (p SlackPort) Send(ctx context.Context, msg Message) error {
 		return fmt.Errorf("slack post to %s: %w", channel, err)
 	}
 	return nil
+}
+
+// slackEscape applies Slack's required mrkdwn escaping, so agent-written
+// text cannot form links, user or channel mentions (<!here>, <@U…>) or
+// spoof a different command.
+func slackEscape(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }

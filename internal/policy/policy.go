@@ -50,10 +50,14 @@ const (
 	// (facts.self_tamper) to requires_approval. A pack may be stricter
 	// (deny) but not looser.
 	BuiltinTamperRuleID = "__builtin_self_tamper__"
+	// BuiltinApprovalRuleID denies an agent action that would resolve a
+	// pending approval (facts.self_approval): approving its own held
+	// action would void the approval step (audit H10).
+	BuiltinApprovalRuleID = "__builtin_self_approval__"
 )
 
 func reservedRuleID(id string) bool {
-	return id == DefaultRuleID || id == BuiltinSecretsRuleID || id == BuiltinTamperRuleID
+	return id == DefaultRuleID || id == BuiltinSecretsRuleID || id == BuiltinTamperRuleID || id == BuiltinApprovalRuleID
 }
 
 var ErrNotBoolean = errors.New("rule condition does not evaluate to a boolean")
@@ -215,6 +219,14 @@ func (s *CompiledSnapshot) Evaluate(in Input) (Decision, error) {
 			RiskClassification: "actiongate_secrets",
 			MatchedRuleID:      BuiltinSecretsRuleID,
 			Trace:              []RuleTrace{{RuleID: BuiltinSecretsRuleID, Condition: "facts.self_secret (built-in)", Matched: true}},
+		}, nil
+	}
+	if fm["self_approval"] {
+		return Decision{
+			Decision:           Deny,
+			RiskClassification: "self_approval",
+			MatchedRuleID:      BuiltinApprovalRuleID,
+			Trace:              []RuleTrace{{RuleID: BuiltinApprovalRuleID, Condition: "facts.self_approval (built-in)", Matched: true}},
 		}, nil
 	}
 	d, err := s.evaluateRules(activation, trace)
