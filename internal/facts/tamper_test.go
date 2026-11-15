@@ -14,6 +14,7 @@ func TestIsControlPath(t *testing.T) {
 		"web/.vscode/settings.json":                      false,
 		"app/dev.json":                                   false,
 		".claude/commands/review.md":                     false,
+		".claude/*":                                      true, // glob can expand to the settings files
 		"docs/gateway.json.md":                           false,
 	} {
 		if got := IsControlPath(p); got != want {
@@ -56,6 +57,38 @@ func TestSelfTamper(t *testing.T) {
 		{"PowerShell", map[string]any{"command": `'{}' > .claude\settings.json`}, true},
 		{"PowerShell", map[string]any{"command": `Get-Content .claude\settings.json`}, false},
 		{"PowerShell", map[string]any{"command": `Copy-Item .claude\settings.json backup.json`}, true}, // conservative: PS copy operands not split
+
+		// Bypasses found in review of #9 — each one must stay caught.
+		{"MultiEdit", map[string]any{"file_path": "/p/.claude/settings.local.json"}, true},
+		{"Bash", map[string]any{"command": "sed -ni 's/x/y/' .claude/settings.local.json"}, true},
+		{"Bash", map[string]any{"command": "sed -Ei 's/x/y/' .claude/settings.local.json"}, true},
+		{"Bash", map[string]any{"command": "perl -pi.bak -e 's/x//' .claude/settings.json"}, true},
+		{"Bash", map[string]any{"command": "cd .claude && echo {} > settings.local.json"}, true},
+		{"Bash", map[string]any{"command": "cd /repo/.claude; rm settings.json"}, true},
+		{"Bash", map[string]any{"command": `cd "$D" && echo {} > settings.local.json`}, true}, // unknown dir: control name counts
+		{"Bash", map[string]any{"command": "mv .claude /tmp/old"}, true},
+		{"Bash", map[string]any{"command": "rm -rf .claude"}, true},
+		{"Bash", map[string]any{"command": "rm -rf ~/.config/actiongate"}, true},
+		{"Bash", map[string]any{"command": "rm .claude/*"}, true},
+		{"Bash", map[string]any{"command": "chmod 000 .claude"}, true},
+		{"Bash", map[string]any{"command": "cp /tmp/settings.local.json .claude/"}, true},
+		{"PowerShell", map[string]any{"command": `Set-Content -Path:.claude\settings.local.json -Value '{}'`}, true},
+		{"PowerShell", map[string]any{"command": `[IO.File]::WriteAllText('.claude\settings.local.json','{}')`}, true},
+		{"PowerShell", map[string]any{"command": `[System.IO.File]::Delete("C:\bin\ag-hook.exe")`}, true},
+		{"PowerShell", map[string]any{"command": `Remove-Item -Recurse -Force .claude`}, true},
+		{"PowerShell", map[string]any{"command": `Set-Location .claude; Set-Content settings.json '{}'`}, true},
+		{"mcp__fs__write_file", map[string]any{"path": "/p/.claude/settings.json"}, true}, // unknown tool: assume writer
+
+		// ...without flagging ordinary work.
+		{"Bash", map[string]any{"command": "sed -e 's/i/I/' .claude/settings.json"}, false}, // -e takes the script; no -i
+		{"Bash", map[string]any{"command": "sed -n '/hooks/p' .claude/settings.json"}, false},
+		{"Bash", map[string]any{"command": "cd src && echo x > settings.json"}, false},
+		{"Bash", map[string]any{"command": "ls .claude && cat .claude/settings.json"}, false},
+		{"Bash", map[string]any{"command": "cp .claude/settings.json /tmp/"}, false},
+		{"Bash", map[string]any{"command": "rm -rf node_modules/.cache"}, false},
+		{"PowerShell", map[string]any{"command": `Set-Location src; Set-Content settings.json '{}'`}, false},
+		{"PowerShell", map[string]any{"command": `[IO.File]::ReadAllText('.claude\settings.json')`}, false},
+		{"Glob", map[string]any{"path": ".claude", "pattern": "*.json"}, false},
 	}
 	for _, c := range cases {
 		f := Derive(c.tool, c.params)

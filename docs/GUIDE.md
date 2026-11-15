@@ -190,7 +190,9 @@ A policy is JSON: a `default_decision` plus an ordered list of rules.
   `eval`, a pipe into a shell, encoded PowerShell) and `facts.self_tamper`
   (writes, moves or deletes a file ActionGate's own enforcement depends on:
   `.claude/settings*.json`, `ag-hook`, `gateway.json`, the dev install's
-  `dev.json`; reading them is not tamper). They cover Bash,
+  `dev.json`, or the `.claude` / actiongate config directory itself;
+  relative paths are resolved through `cd`/`Set-Location`; reading them is
+  not tamper). They cover Bash,
   PowerShell and the file tools; every key is always present, so no `has()`
   guard is needed. Prefer facts over `params.command.contains(...)`: text
   matching misses `rm -fr`, `rm -r -f` and `bash -c '...'`

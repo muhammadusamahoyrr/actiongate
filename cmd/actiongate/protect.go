@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	defaultMatcher  = "Read|Edit|Write|NotebookEdit|Bash|Grep"
+	defaultMatcher  = "Read|Edit|MultiEdit|Write|NotebookEdit|Bash|PowerShell|Grep"
 	hookTimeoutSecs = 360 // must outlive the gateway's approval wait (5m)
 )
 

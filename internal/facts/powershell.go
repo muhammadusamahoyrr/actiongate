@@ -20,8 +20,12 @@ func powerShellDepth(cmd string, depth int) Facts {
 		f.opaque("nested code deeper than the analyzer follows")
 		return f
 	}
+	var tamper psTamperState // carries Set-Location across statements
 	for _, stmt := range strings.FieldsFunc(cmd, func(r rune) bool { return r == ';' || r == '\n' }) {
 		f.merge(psStatement(stmt, depth))
+		if why, ok := tamper.statement(psTokens(stmt)); ok {
+			f.selfTamper(why)
+		}
 	}
 	return f
 }
@@ -33,9 +37,6 @@ func psStatement(stmt string, depth int) Facts {
 		f.opaque("PowerShell script block built at run time")
 	}
 	toks := psTokens(stmt)
-	if why, ok := psTamper(toks); ok {
-		f.selfTamper(why)
-	}
 	recurse := false
 	for _, t := range toks {
 		l := strings.ToLower(t)

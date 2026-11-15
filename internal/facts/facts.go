@@ -139,7 +139,7 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 		f = ShellWith(str("command"), o)
 	case "PowerShell":
 		f = PowerShell(str("command"))
-	case "Read", "Edit", "Write", "NotebookEdit":
+	case "Read", "Edit", "MultiEdit", "Write", "NotebookEdit":
 		p := str("file_path")
 		if p == "" {
 			p = str("notebook_path")
@@ -160,6 +160,17 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 		}
 		if g := str("glob"); g != "" && globMatchesSecret(g) {
 			f.secret("grep glob covers secret files: " + g)
+		}
+	case "Glob", "LS", "WebFetch", "WebSearch", "TodoWrite":
+		// Read-only, or no file operand.
+	default:
+		// A tool we do not know (a new built-in, an MCP write_file, ...):
+		// assume it may write any path it is given.
+		for _, k := range []string{"file_path", "notebook_path", "path", "destination", "target"} {
+			if p := str(k); IsControlPath(p) || IsControlDir(p) {
+				f.selfTamper(tool + " on actiongate control path " + path.Base(slash(p)))
+				break
+			}
 		}
 	}
 	return f

@@ -105,6 +105,9 @@ type shellAnalyzer struct {
 	vars  map[string]string
 	sawDB bool
 	texts []string
+	// cwd follows cd/pushd so relative writes are judged on the path they
+	// really hit (see tamper.go).
+	cwd cwdTracker
 }
 
 // stdinSource: piped means content the analyzer cannot see (a pipe);
@@ -130,7 +133,7 @@ func (a *shellAnalyzer) visit(node syntax.Node) bool {
 			}
 			switch r.Op {
 			case syntax.RdrOut, syntax.AppOut, syntax.ClbOut, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
-				if t := a.approx(r.Word); IsControlPath(t) {
+				if t := a.approx(r.Word); a.cwd.file(t) {
 					a.f.selfTamper("redirects output into actiongate control file " + path.Base(slash(t)))
 				}
 			}
