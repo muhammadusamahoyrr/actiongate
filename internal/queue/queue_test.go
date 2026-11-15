@@ -2,7 +2,9 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -159,7 +161,7 @@ func TestQueue(t *testing.T) {
 			}, &river.InsertOpts{ScheduledAt: time.Now().Add(time.Second)}),
 		)
 
-		workers, err := NewWorkers(pool, notify.LogPort{})
+		workers, err := NewWorkers(pool, notify.LogPort{}, nil)
 		if err != nil {
 			t.Fatalf("NewWorkers: %v", err)
 		}
@@ -264,24 +266,46 @@ func TestQueue(t *testing.T) {
 
 	t.Run("notification worker delivers through the port", func(t *testing.T) {
 		rec := &recordingPort{}
-		w := &DeliverApprovalWorker{Port: rec}
+		// The job carries ids only; the worker derives the token at send
+		// time (audit C5).
+		var mintedFor uuid.UUID
+		w := &DeliverApprovalWorker{Port: rec, Mint: func(_, approvalID uuid.UUID) (string, error) {
+			mintedFor = approvalID
+			return "agt1_derived", nil
+		}}
 		args := DeliverApprovalArgs{
 			TenantID: uuid.New(), ActionID: uuid.New(), ApprovalRequestID: uuid.New(),
 			ApproverTarget: "team-lead", Title: "Approve rm -rf?", Body: "agent-1 wants bash",
-			CallbackToken: "cb-" + uuid.NewString(),
 		}
 		if err := w.Work(ctx, &river.Job[DeliverApprovalArgs]{Args: args}); err != nil {
 			t.Fatalf("Work: %v", err)
 		}
+		// A job queued by an older build still carries its random token,
+		// which cannot be re-derived: use it as is.
+		legacy := args
+		legacy.LegacyCallbackToken = "agt1_legacy"
+		if err := w.Work(ctx, &river.Job[DeliverApprovalArgs]{Args: legacy}); err != nil {
+			t.Fatalf("Work legacy: %v", err)
+		}
+		// No minter configured: fail the job rather than send no token.
+		if err := (&DeliverApprovalWorker{Port: rec}).Work(ctx, &river.Job[DeliverApprovalArgs]{Args: args}); err == nil {
+			t.Error("delivery without a token minter should fail")
+		}
 		rec.mu.Lock()
 		defer rec.mu.Unlock()
-		if len(rec.sent) != 1 {
-			t.Fatalf("messages sent = %d, want 1", len(rec.sent))
+		if len(rec.sent) != 2 {
+			t.Fatalf("messages sent = %d, want 2", len(rec.sent))
 		}
 		got := rec.sent[0]
-		if got.ApproverTarget != "team-lead" || got.CallbackToken != args.CallbackToken ||
-			got.ActionID != args.ActionID {
-			t.Fatalf("message mangled in delivery: %+v", got)
+		if got.ApproverTarget != "team-lead" || got.CallbackToken != "agt1_derived" ||
+			got.ActionID != args.ActionID || mintedFor != args.ApprovalRequestID {
+			t.Fatalf("message mangled in delivery: %+v (minted for %s)", got, mintedFor)
+		}
+		if rec.sent[1].CallbackToken != "agt1_legacy" {
+			t.Fatalf("legacy job token = %q, want agt1_legacy", rec.sent[1].CallbackToken)
+		}
+		if b, _ := json.Marshal(args); strings.Contains(string(b), "callback_token") {
+			t.Fatalf("new job args serialise a callback_token field: %s", b)
 		}
 	})
 }

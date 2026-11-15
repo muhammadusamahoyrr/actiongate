@@ -112,10 +112,22 @@ func (w *OutcomeDeadlineWorker) Work(ctx context.Context, job *river.Job[Outcome
 type DeliverApprovalWorker struct {
 	river.WorkerDefaults[DeliverApprovalArgs]
 	Port notify.Port
+	// Mint re-derives the callback token; the job never carries it.
+	Mint TokenMinter
 }
 
 func (w *DeliverApprovalWorker) Work(ctx context.Context, job *river.Job[DeliverApprovalArgs]) error {
 	a := job.Args
+	token := a.LegacyCallbackToken // only jobs queued by an older build
+	if token == "" {
+		if w.Mint == nil {
+			return errors.New("deliver approval: no token minter configured")
+		}
+		var err error
+		if token, err = w.Mint(a.TenantID, a.ApprovalRequestID); err != nil {
+			return fmt.Errorf("deliver approval: derive token: %w", err)
+		}
+	}
 	return w.Port.Send(ctx, notify.Message{
 		TenantID:          a.TenantID,
 		ActionID:          a.ActionID,
@@ -123,13 +135,13 @@ func (w *DeliverApprovalWorker) Work(ctx context.Context, job *river.Job[Deliver
 		ApproverTarget:    a.ApproverTarget,
 		Title:             a.Title,
 		Body:              a.Body,
-		CallbackToken:     a.CallbackToken,
+		CallbackToken:     token,
 	})
 }
 
 // NewWorkers registers every worker; the control plane and tests share this
 // single registry so a job kind can never exist without its worker.
-func NewWorkers(pool *pgxpool.Pool, port notify.Port) (*river.Workers, error) {
+func NewWorkers(pool *pgxpool.Pool, port notify.Port, mint TokenMinter) (*river.Workers, error) {
 	workers := river.NewWorkers()
 	if err := river.AddWorkerSafely(workers, &ApprovalExpiryWorker{Pool: pool}); err != nil {
 		return nil, err
@@ -137,7 +149,7 @@ func NewWorkers(pool *pgxpool.Pool, port notify.Port) (*river.Workers, error) {
 	if err := river.AddWorkerSafely(workers, &OutcomeDeadlineWorker{Pool: pool}); err != nil {
 		return nil, err
 	}
-	if err := river.AddWorkerSafely(workers, &DeliverApprovalWorker{Port: port}); err != nil {
+	if err := river.AddWorkerSafely(workers, &DeliverApprovalWorker{Port: port, Mint: mint}); err != nil {
 		return nil, err
 	}
 	return workers, nil

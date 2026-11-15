@@ -179,7 +179,13 @@ func TestOrchestrator(t *testing.T) {
 			t.Fatalf("delivery args: %v", err)
 		}
 
-		resolution, err := w.appr.Resolve(ctx, delivered.CallbackToken, "approved", "alice", "fine")
+		// The job carries ids only; the token is re-derived, as the
+		// delivery worker does (audit C5).
+		token, err := w.appr.CallbackToken(delivered.TenantID, delivered.ApprovalRequestID)
+		if err != nil {
+			t.Fatalf("CallbackToken: %v", err)
+		}
+		resolution, err := w.appr.Resolve(ctx, token, "approved", "alice", "fine")
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
