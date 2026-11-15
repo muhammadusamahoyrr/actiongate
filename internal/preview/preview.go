@@ -129,7 +129,13 @@ var maskers = []struct {
 	// terminator after the value is captured and written back unchanged —
 	// replacing it would misrepresent the command (TOKEN=abc|sh keeps its
 	// pipe).
-	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)('[A-Za-z0-9._~+/=@%:!,-]+'|"[A-Za-z0-9._~+/=@%:!,-]+"|[A-Za-z0-9._~+/=@%:!,-]+)([\s;&|)\]},"']|$)`), "$1$2" + masked + "$4"},
+	//
+	// Only the plain assignment shape KEY=value (and --key=value) is
+	// masked: the key starts a word (not after a quote), and the value
+	// follows "=" directly. A space or a quote around "=" can mean the
+	// "value" is really a separate word that runs (eval 'TOKEN= 'reboot''),
+	// so those forms are shown as written.
+	{regexp.MustCompile(`(?i)(^|[\s;&|(-])([A-Za-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential)[A-Za-z0-9_]*)=('[A-Za-z0-9._~+/=@%:!,-]+'|"[A-Za-z0-9._~+/=@%:!,-]+"|[A-Za-z0-9._~+/=@%:!,-]+)([\s;&|)]|$)`), "$1$2=" + masked + "$4"},
 	// Credentials in URLs.
 	{regexp.MustCompile(`(://[A-Za-z0-9._~%-]+):[A-Za-z0-9._~%!*'+=,-]+@`), "$1:" + masked + "@"},
 	// Well-known token shapes.

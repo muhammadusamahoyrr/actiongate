@@ -71,20 +71,23 @@ func TestMaskNeverHidesExecutableText(t *testing.T) {
 func TestMaskPreservesTheCommandAroundSecrets(t *testing.T) {
 	//nolint:gosec // G101: fake credentials, the input to the masking under test
 	for in, want := range map[string]string{
-		"TOKEN=abc123|sh":             "TOKEN=[credential hidden]|sh",
-		"TOKEN=abc123; rm -rf ~":      "TOKEN=[credential hidden]; rm -rf ~",
-		"TOKEN=abc123&& make":         "TOKEN=[credential hidden]&& make",
-		"(TOKEN=abc123)":              "(TOKEN=[credential hidden])",
-		"TOKEN=abc123\nrm -rf ~":      "TOKEN=[credential hidden]\nrm -rf ~",
-		`{"api_key":"abc123","x":1}`:  `{"api_key":[credential hidden],"x":1}`,
-		`PASSWORD='p@ss word' ./run`:  `PASSWORD='p@ss word' ./run`, // space: shown as written
-		`PASSWORD='p@ssw0rd' ./run`:   `PASSWORD=[credential hidden] ./run`,
-		`PASSWORD="a,b" ./run`:        `PASSWORD=[credential hidden] ./run`,
-		`TOKEN=a,b ./run`:             `TOKEN=[credential hidden] ./run`,
-		`eval 'TOKEN=' rm -rf ~ ''`:   `eval 'TOKEN=' rm -rf ~ ''`,  // a closing quote misread as opening must hide nothing
-		`PASSWORD='p@ss w;rd' ./run`:  `PASSWORD='p@ss w;rd' ./run`, // metacharacter: shown as written
-		`sh -c "TOKEN='$(rm -rf ~)'"`: `sh -c "TOKEN='$(rm -rf ~)'"`,
-		"export API_KEY=abc123":       "export API_KEY=[credential hidden]",
+		"TOKEN=abc123|sh":              "TOKEN=[credential hidden]|sh",
+		"TOKEN=abc123; rm -rf ~":       "TOKEN=[credential hidden]; rm -rf ~",
+		"TOKEN=abc123&& make":          "TOKEN=[credential hidden]&& make",
+		"(TOKEN=abc123)":               "(TOKEN=[credential hidden])",
+		"TOKEN=abc123\nrm -rf ~":       "TOKEN=[credential hidden]\nrm -rf ~",
+		`{"api_key":"abc123","x":1}`:   `{"api_key":"abc123","x":1}`, // not an assignment shape: shown as written
+		`eval 'TOKEN= 'reboot''`:       `eval 'TOKEN= 'reboot''`,     // reboot runs: never hidden
+		`eval TOKEN"= "./x""`:          `eval TOKEN"= "./x""`,
+		`mysql --password=s3cret -u r`: `mysql --password=[credential hidden] -u r`,
+		`PASSWORD='p@ss word' ./run`:   `PASSWORD='p@ss word' ./run`, // space: shown as written
+		`PASSWORD='p@ssw0rd' ./run`:    `PASSWORD=[credential hidden] ./run`,
+		`PASSWORD="a,b" ./run`:         `PASSWORD=[credential hidden] ./run`,
+		`TOKEN=a,b ./run`:              `TOKEN=[credential hidden] ./run`,
+		`eval 'TOKEN=' rm -rf ~ ''`:    `eval 'TOKEN=' rm -rf ~ ''`,  // a closing quote misread as opening must hide nothing
+		`PASSWORD='p@ss w;rd' ./run`:   `PASSWORD='p@ss w;rd' ./run`, // metacharacter: shown as written
+		`sh -c "TOKEN='$(rm -rf ~)'"`:  `sh -c "TOKEN='$(rm -rf ~)'"`,
+		"export API_KEY=abc123":        "export API_KEY=[credential hidden]",
 	} {
 		if got := Mask(in); got != want {
 			t.Errorf("Mask(%q)\n got %q\nwant %q", in, got, want)
