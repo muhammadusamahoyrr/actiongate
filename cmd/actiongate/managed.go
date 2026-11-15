@@ -68,6 +68,7 @@ func installBinaries(srcDir, dstDir string) (string, error) {
 	if err := os.MkdirAll(dstDir, 0o755); err != nil { //nolint:gosec // G301: users must be able to run the hook
 		return "", fmt.Errorf("create %s: %w", dstDir, err)
 	}
+	// (protectManaged checks dstDir with checkInstallDir first.)
 	for _, b := range managedBinaries {
 		src := filepath.Join(srcDir, exeName(b))
 		dst := filepath.Join(dstDir, exeName(b))
@@ -137,12 +138,31 @@ func protectManaged(installDir, matcher string, exclusive bool) int {
 		fmt.Fprintln(os.Stderr, "protect -managed:", err)
 		return 1
 	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil { //nolint:gosec // G301: users must be able to run the hook
+		fmt.Fprintln(os.Stderr, "protect -managed:", err)
+		return 1
+	}
+	if err := checkInstallDir(installDir); err != nil {
+		fmt.Fprintln(os.Stderr, "protect -managed: refusing install dir:", err)
+		return 1
+	}
 	agHook, err := installBinaries(filepath.Dir(self), installDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "protect -managed: install binaries:", err)
 		return 1
 	}
-	fmt.Printf("• installed %s into %s (admin-only)\n", managedBinaries, installDir)
+	fmt.Printf("• installed into %s (admin-only):\n", installDir)
+	for _, b := range managedBinaries {
+		p := filepath.Join(installDir, exeName(b))
+		if sum, err := fileSHA256(p); err == nil {
+			fmt.Printf("    %x  %s\n", sum, exeName(b))
+		}
+	}
+	// The copies are only as trustworthy as their source: if the build
+	// directory was writable by the agent, it could have swapped them
+	// before this ran.
+	fmt.Printf("  copied from %s — run this from a freshly extracted release (archive verified\n", filepath.Dir(self))
+	fmt.Println("  against checksums.txt) or a build directory no agent session has written to.")
 
 	settingsPath := managedSettingsPath()
 	command := managedHookCommand(agHook)

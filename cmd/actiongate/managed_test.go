@@ -132,13 +132,52 @@ func TestHookProtectionFlagsWritableManagedFiles(t *testing.T) {
 	}
 	dir := t.TempDir()
 	settings := filepath.Join(dir, "managed-settings.json")
-	if ok, mark, _ := hookProtection(settings, dir); !ok || mark != "!" {
+	if ok, mark, _ := hookProtection(settings); !ok || mark != "!" {
 		t.Errorf("no managed hook: ok=%v mark=%q, want warning only", ok, mark)
 	}
-	if err := installManagedHook(settings, managedHookCommand(filepath.Join(dir, "ag-hook")), defaultMatcher, false); err != nil {
+	// The binary named in the command, not a default path, is checked.
+	bin := filepath.Join(dir, "elsewhere", exeName("ag-hook"))
+	if err := os.MkdirAll(filepath.Dir(bin), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if ok, mark, msg := hookProtection(settings, dir); ok || mark != "✖" {
+	if err := os.WriteFile(bin, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installManagedHook(settings, managedHookCommand(bin), defaultMatcher, false); err != nil {
+		t.Fatal(err)
+	}
+	if ok, mark, msg := hookProtection(settings); ok || mark != "✖" {
 		t.Errorf("writable managed files: ok=%v mark=%q msg=%q, want failure", ok, mark, msg)
+	}
+	// A managed hook without -locked is a failure too.
+	if err := installManagedHook(settings, bashHookCommand(bin), defaultMatcher, false); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, msg := hookProtection(settings); ok || !strings.Contains(msg, "-locked") {
+		t.Errorf("unlocked managed hook: ok=%v msg=%q, want -locked failure", ok, msg)
+	}
+}
+
+func TestHookBinaryFromCommand(t *testing.T) {
+	want := filepath.FromSlash("/opt/action gate/ag-hook")
+	in := "'/opt/action gate/ag-hook' -locked"
+	if runtime.GOOS == "windows" {
+		want = `C:\PROGRA~1\actiongate\ag-hook.exe`
+		in = "'/c/PROGRA~1/actiongate/ag-hook.exe' -locked"
+	}
+	if got, err := hookBinaryFromCommand(in); err != nil || got != want {
+		t.Errorf("hookBinaryFromCommand(%q) = %q, %v; want %q", in, got, err, want)
+	}
+	if got, err := hookBinaryFromCommand(shellQuote("/opt/it's/ag-hook") + " -locked"); err != nil || filepath.ToSlash(got) != "/opt/it's/ag-hook" {
+		t.Errorf("escaped quote: %q, %v", got, err)
+	}
+	if _, err := hookBinaryFromCommand("/bin/ag-hook"); err == nil {
+		t.Error("unquoted command should not parse")
+	}
+}
+
+func TestCheckInstallDirRejectsUserDir(t *testing.T) {
+	if err := checkInstallDir(t.TempDir()); err == nil {
+		t.Error("a user-owned temp dir must be refused as an install dir")
 	}
 }
