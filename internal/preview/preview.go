@@ -121,7 +121,13 @@ var maskers = []struct {
 	// no spaces, quotes, $, backslashes or other metacharacters inside, so
 	// a regex over raw text can never disagree with the shell about where
 	// the value ends. Anything else is shown as written.
-	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential)[A-Za-z0-9_]*)(\s*[=:]\s*)('[A-Za-z0-9._~+/=@%:!,-]+'|"[A-Za-z0-9._~+/=@%:!,-]+"|[A-Za-z0-9._~+/=@%:!,-]+)(?:[\s;&|)]|$)`), "$1$2" + masked + " "},
+	// Single-quoted values may contain spaces but no metacharacter at all:
+	// nested quoting (sh -c "TOKEN='$(rm -rf ~)'") makes text inside single
+	// quotes executable, so $ ` ; | & < > ( ) \ are never masked anywhere.
+	// Double-quoted and bare values: token characters only. The terminator
+	// after the value is captured and written back unchanged — replacing it
+	// would misrepresent the command (TOKEN=abc|sh must keep its pipe).
+	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)('[^'\n$` + "`" + `;|&<>()\\]+'|"[A-Za-z0-9._~+/=@%:!-]+"|[A-Za-z0-9._~+/=@%:!-]+)([\s;&|)\]},"']|$)`), "$1$2" + masked + "$4"},
 	// Credentials in URLs.
 	{regexp.MustCompile(`(://[A-Za-z0-9._~%-]+):[A-Za-z0-9._~%!*'+=,-]+@`), "$1:" + masked + "@"},
 	// Well-known token shapes.

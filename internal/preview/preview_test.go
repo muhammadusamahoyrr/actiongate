@@ -66,6 +66,27 @@ func TestMaskNeverHidesExecutableText(t *testing.T) {
 	}
 }
 
+// The text around a masked value must be preserved exactly: dropping a
+// pipe or a semicolon would show the approver a different command.
+func TestMaskPreservesTheCommandAroundSecrets(t *testing.T) {
+	for in, want := range map[string]string{
+		"TOKEN=abc123|sh":             "TOKEN=[credential hidden]|sh",
+		"TOKEN=abc123; rm -rf ~":      "TOKEN=[credential hidden]; rm -rf ~",
+		"TOKEN=abc123&& make":         "TOKEN=[credential hidden]&& make",
+		"(TOKEN=abc123)":              "(TOKEN=[credential hidden])",
+		"TOKEN=abc123\nrm -rf ~":      "TOKEN=[credential hidden]\nrm -rf ~",
+		`{"api_key":"abc123","x":1}`:  `{"api_key":[credential hidden],"x":1}`,
+		`PASSWORD='p@ss word' ./run`:  `PASSWORD=[credential hidden] ./run`,
+		`PASSWORD='p@ss w;rd' ./run`:  `PASSWORD='p@ss w;rd' ./run`, // metacharacter: shown as written
+		`sh -c "TOKEN='$(rm -rf ~)'"`: `sh -c "TOKEN='$(rm -rf ~)'"`,
+		"export API_KEY=abc123":       "export API_KEY=[credential hidden]",
+	} {
+		if got := Mask(in); got != want {
+			t.Errorf("Mask(%q)\n got %q\nwant %q", in, got, want)
+		}
+	}
+}
+
 func TestBodyNeutralisesMarkup(t *testing.T) {
 	b := Body("Bash", "agent*\n<!here>", "r`x", "risk", map[string]any{"command": "echo ```\n*bold*"},
 		[]string{"reads secret file *x*"})
