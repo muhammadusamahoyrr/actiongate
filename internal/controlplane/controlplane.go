@@ -30,9 +30,19 @@ import (
 )
 
 type Config struct {
+	// DatabaseURL is the role every request path runs as. It should be a
+	// non-superuser, non-owner role so RLS and the append-only triggers
+	// bind it (internal/dbroles.AppRole).
 	DatabaseURL string
-	Listen      string // see ListenAddr: defaults to 127.0.0.1:8091
-	TokenSecret string // >= 32 bytes
+	// SealerDatabaseURL, if set, is the role the sealer runs as: it reads
+	// across tenants, so it needs BYPASSRLS (dbroles.SealerRole). Empty
+	// means DatabaseURL.
+	SealerDatabaseURL string
+	// SkipQueueMigrate: the caller already ran River's migrations as the
+	// owning role (the app role cannot run DDL).
+	SkipQueueMigrate bool
+	Listen           string // see ListenAddr: defaults to 127.0.0.1:8091
+	TokenSecret      string // >= 32 bytes
 
 	GrantKeySeed []byte // 32-byte ed25519 seed
 	EpochKeySeed []byte // 32-byte ed25519 seed
@@ -104,8 +114,24 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("ping: %w", err)
 	}
-	if err := queue.Migrate(ctx, pool); err != nil {
-		return err
+	if !cfg.SkipQueueMigrate {
+		if err := queue.Migrate(ctx, pool); err != nil {
+			return err
+		}
+	}
+	// The sealer discovers unsealed streams across every tenant, so it
+	// needs a role that reads past RLS (internal/dbroles). Everything else
+	// runs on the RLS-bound pool.
+	sealerPool := pool
+	if cfg.SealerDatabaseURL != "" && cfg.SealerDatabaseURL != cfg.DatabaseURL {
+		sealerPool, err = pgxpool.New(ctx, cfg.SealerDatabaseURL)
+		if err != nil {
+			return fmt.Errorf("connect sealer: %w", err)
+		}
+		defer sealerPool.Close()
+		if err := sealerPool.Ping(ctx); err != nil {
+			return fmt.Errorf("ping sealer: %w", err)
+		}
 	}
 
 	grantSigner, grantPub, err := grant.NewSignerFromSeed("grant-1", cfg.GrantKeySeed)
@@ -169,7 +195,7 @@ func Run(ctx context.Context, cfg Config) error {
 		_ = workerClient.Stop(stopCtx)
 	}()
 
-	sealer := &seal.Sealer{Pool: pool, Signer: epochSigner, Logger: log}
+	sealer := &seal.Sealer{Pool: sealerPool, Signer: epochSigner, Logger: log}
 	go func() {
 		if err := sealer.Run(ctx, seal.DefaultInterval); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("sealer stopped", "error", err)

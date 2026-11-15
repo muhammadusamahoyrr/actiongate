@@ -20,8 +20,10 @@ import (
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/admin"
 	"github.com/muhammadusamahoyrr/actiongate/internal/controlplane"
+	"github.com/muhammadusamahoyrr/actiongate/internal/dbroles"
 	"github.com/muhammadusamahoyrr/actiongate/internal/dbruntime"
 	"github.com/muhammadusamahoyrr/actiongate/internal/gateway"
+	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
 	"github.com/muhammadusamahoyrr/actiongate/migrations"
 	"github.com/muhammadusamahoyrr/actiongate/policies"
 )
@@ -79,11 +81,14 @@ func cmdUp(args []string) int {
 		}
 	}
 
-	if err := migrate(ctx, cfg.DatabaseURL); err != nil {
+	if err := prepareDatabase(ctx, cfg, cfgPath); err != nil {
 		fmt.Fprintln(os.Stderr, "up: migrate:", err)
 		return 1
 	}
 	fmt.Println("• migrations: applied")
+	if cfg.AppDBPassword != "" {
+		fmt.Printf("• database roles: control plane runs as %s (row-level security enforced), sealer as %s\n", dbroles.AppRole, dbroles.SealerRole)
+	}
 
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -180,9 +185,15 @@ func runControlPlane(ctx context.Context, cfg *devConfig, log *slog.Logger) erro
 	if err != nil {
 		return err
 	}
+	appDSN, sealerDSN, err := roleDSNs(cfg)
+	if err != nil {
+		return err
+	}
 	return controlplane.Run(ctx, controlplane.Config{
 		Logger:             log,
-		DatabaseURL:        cfg.DatabaseURL,
+		DatabaseURL:        appDSN,
+		SealerDatabaseURL:  sealerDSN,
+		SkipQueueMigrate:   true, // prepareDatabase ran it as the owner
 		Listen:             cfg.Listen,
 		TokenSecret:        cfg.TokenSecret,
 		GrantKeySeed:       grantSeed,
@@ -209,6 +220,67 @@ func pingOnce(ctx context.Context, dbURL string) error {
 	}
 	defer pool.Close()
 	return pool.Ping(ctx)
+}
+
+// prepareDatabase runs every migration as the owning role (schema, then
+// River's queue tables) and provisions the least-privilege roles the
+// control plane runs as (audit C4). Role passwords are generated once and
+// kept in dev.json. On an external database where the configured role
+// cannot create roles, it warns and the control plane keeps running as the
+// configured role, as before.
+func prepareDatabase(ctx context.Context, cfg *devConfig, cfgPath string) error {
+	if err := migrate(ctx, cfg.DatabaseURL); err != nil {
+		return err
+	}
+	owner, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer owner.Close()
+	if err := queue.Migrate(ctx, owner); err != nil {
+		return fmt.Errorf("queue migrate: %w", err)
+	}
+	err = updateDevConfig(cfgPath, cfg, func(c *devConfig) (bool, error) {
+		changed := false
+		for _, pw := range []*string{&c.AppDBPassword, &c.SealerDBPassword} {
+			if *pw == "" {
+				g, err := dbruntime.GeneratePassword()
+				if err != nil {
+					return false, err
+				}
+				*pw, changed = g, true
+			}
+		}
+		return changed, nil
+	})
+	if err != nil {
+		return err
+	}
+	err = dbroles.Ensure(ctx, owner, cfg.AppDBPassword, cfg.SealerDBPassword)
+	if dbroles.IsInsufficientPrivilege(err) {
+		fmt.Fprintf(os.Stderr, "⚠ %v\n  the control plane will run as the configured database role, which bypasses row-level security if it is a superuser or owns the tables\n", err)
+		return updateDevConfig(cfgPath, cfg, func(c *devConfig) (bool, error) {
+			changed := c.AppDBPassword != "" || c.SealerDBPassword != ""
+			c.AppDBPassword, c.SealerDBPassword = "", ""
+			return changed, nil
+		})
+	}
+	return err
+}
+
+// roleDSNs returns the connection strings for the app and sealer roles,
+// or the configured (owner) URL for both when no roles were provisioned.
+func roleDSNs(cfg *devConfig) (app, sealer string, err error) {
+	if cfg.AppDBPassword == "" || cfg.SealerDBPassword == "" {
+		return cfg.DatabaseURL, cfg.DatabaseURL, nil
+	}
+	if app, err = dbroles.DSN(cfg.DatabaseURL, dbroles.AppRole, cfg.AppDBPassword); err != nil {
+		return "", "", err
+	}
+	if sealer, err = dbroles.DSN(cfg.DatabaseURL, dbroles.SealerRole, cfg.SealerDBPassword); err != nil {
+		return "", "", err
+	}
+	return app, sealer, nil
 }
 
 func migrate(ctx context.Context, dbURL string) error {

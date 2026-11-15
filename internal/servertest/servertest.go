@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
+	"github.com/muhammadusamahoyrr/actiongate/internal/dbroles"
 	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
 	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
 	"github.com/muhammadusamahoyrr/actiongate/internal/notify"
@@ -52,7 +53,23 @@ func Setup(t *testing.T) *Stack {
 	if err := queue.Migrate(ctx, pool); err != nil {
 		t.Fatalf("river migrate: %v", err)
 	}
-	insertClient, err := queue.NewInsertOnlyClient(pool)
+	// Every control-plane component runs as the least-privilege app role,
+	// exactly as in production (audit C4), so a request path that forgets
+	// its tenant context fails here instead of working only as superuser.
+	// pool stays the owner, for fixtures and assertions.
+	if err := dbroles.Ensure(ctx, pool, "app-test-pw", "sealer-test-pw"); err != nil {
+		t.Fatalf("db roles: %v", err)
+	}
+	appDSN, err := dbroles.DSN(pool.Config().ConnString(), dbroles.AppRole, "app-test-pw")
+	if err != nil {
+		t.Fatalf("app dsn: %v", err)
+	}
+	app, err := pgxpool.New(ctx, appDSN)
+	if err != nil {
+		t.Fatalf("app pool: %v", err)
+	}
+	t.Cleanup(app.Close)
+	insertClient, err := queue.NewInsertOnlyClient(app)
 	if err != nil {
 		t.Fatalf("insert client: %v", err)
 	}
@@ -64,23 +81,23 @@ func Setup(t *testing.T) *Stack {
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
-	coordinator := &execution.Coordinator{Pool: pool, Queue: insertClient, Signer: signer}
+	coordinator := &execution.Coordinator{Pool: app, Queue: insertClient, Signer: signer}
 	approvals := &approval.Service{
-		Pool: pool, Queue: insertClient,
+		Pool: app, Queue: insertClient,
 		TokenSecret: []byte("test-secret-32-bytes-minimum-ok!"),
 		Router:      approval.Router{Default: "team-lead"},
 		Expiry:      time.Hour,
 	}
-	orch := &orchestrator.Orchestrator{Pool: pool, Engine: engine, Approvals: approvals, Coordinator: coordinator}
+	orch := &orchestrator.Orchestrator{Pool: app, Engine: engine, Approvals: approvals, Coordinator: coordinator}
 
-	workers, err := queue.NewWorkers(pool, notify.LogPort{})
+	workers, err := queue.NewWorkers(app, notify.LogPort{})
 	if err != nil {
 		t.Fatalf("workers: %v", err)
 	}
 	if err := execution.RegisterWorker(workers, coordinator); err != nil {
 		t.Fatalf("register authorize worker: %v", err)
 	}
-	workerClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+	workerClient, err := river.NewClient(riverpgxv5.New(app), &river.Config{
 		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},
 		Workers: workers,
 	})
@@ -97,7 +114,7 @@ func Setup(t *testing.T) *Stack {
 	})
 
 	srv := &server.Server{
-		Pool: pool, Orchestrator: orch, Approvals: approvals, Coordinator: coordinator,
+		Pool: app, Orchestrator: orch, Approvals: approvals, Coordinator: coordinator,
 		GrantKeyID: signer.KeyID(), GrantPublicKey: grantPub,
 		SlackSigningSecret: SlackSigningSecret,
 		EpochKeyIDs:        []string{"epoch-1"},

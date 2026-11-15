@@ -62,6 +62,7 @@ func run() error {
 
 	return controlplane.Run(ctx, controlplane.Config{
 		DatabaseURL:        k.String("database_url"),
+		SealerDatabaseURL:  k.String("sealer_database_url"),
 		Listen:             k.String("listen"),
 		TokenSecret:        k.String("token_secret"),
 		GrantKeySeed:       grantSeed,
