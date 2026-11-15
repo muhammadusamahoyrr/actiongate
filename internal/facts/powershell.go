@@ -9,7 +9,9 @@ import "strings"
 
 var psRemove = set("remove-item", "rm", "ri", "del", "erase", "rmdir", "rd")
 var psDisk = set("format-volume", "clear-disk", "remove-partition", "initialize-disk")
-var psMetadata = set("test-path", "get-childitem", "gci", "ls", "dir", "get-item", "gi", "resolve-path", "split-path", "join-path", "new-item", "ni", "set-content", "sc", "out-file", "add-content", "ac")
+var psMetadata = set("test-path", "get-childitem", "gci", "ls", "dir", "get-item", "gi", "resolve-path", "split-path", "join-path", "new-item", "ni", "set-content", "sc", "out-file", "add-content", "ac",
+	// changing directory reads nothing (tamper.go tracks where it goes)
+	"set-location", "sl", "cd", "chdir", "push-location", "pushd", "pop-location", "popd")
 var psCopy = set("copy-item", "copy", "cp", "cpi", "move-item", "move", "mv", "mi")
 
 func PowerShell(cmd string) Facts { return powerShellDepth(cmd, 0) }
@@ -22,7 +24,9 @@ func powerShellDepth(cmd string, depth int) Facts {
 	}
 	var tamper psTamperState // carries Set-Location across statements
 	for _, stmt := range strings.FieldsFunc(cmd, func(r rune) bool { return r == ';' || r == '\n' }) {
-		f.merge(psStatement(stmt, depth))
+		// Reads in this statement resolve against the directory earlier
+		// statements moved to; then this statement's own Set-Location applies.
+		f.merge(psStatement(stmt, depth, &tamper))
 		if why, ok := tamper.statement(psTokens(stmt)); ok {
 			f.selfTamper(why)
 		}
@@ -30,7 +34,7 @@ func powerShellDepth(cmd string, depth int) Facts {
 	return f
 }
 
-func psStatement(stmt string, depth int) Facts {
+func psStatement(stmt string, depth int, st *psTamperState) Facts {
 	var f Facts
 	lower := strings.ToLower(stmt)
 	if strings.Contains(lower, "[scriptblock]::create") {
@@ -94,8 +98,8 @@ func psStatement(stmt string, depth int) Facts {
 			cands = dropLastOperand(args)
 		}
 		for _, a := range cands {
-			if IsSecretPath(a) || isSecretDir(a) && psCopy[name] || strings.ContainsAny(a, "*?") && globMatchesSecret(a) {
-				f.secret(name + " reads secret file " + a)
+			if p, ok := st.secretOperand(a, psCopy[name]); ok {
+				f.secretPath(p, name+" reads secret file "+a)
 				break
 			}
 		}

@@ -13,6 +13,7 @@ package facts
 
 import (
 	"path"
+	"sort"
 	"strings"
 )
 
@@ -35,8 +36,28 @@ type Facts struct {
 	// own enforcement depends on (the Claude Code hook settings, ag-hook,
 	// gateway state, dev.json). See tamper.go.
 	SelfTamper bool
+	// SelfSecret: the action reads actiongate's OWN secrets — anything in its
+	// per-user config directory (dev.json: DB password and signing seeds;
+	// gateway.json: the gateway credential and key; pgdata: the database
+	// files). Implies SecretAccess. The policy engine denies it before any
+	// pack rule runs (see internal/policy), so no pack can allow it.
+	SelfSecret bool
 	// Reasons explains each fact that is true, for the audit trail.
 	Reasons []string
+}
+
+// Keys lists every fact name a rule may use as facts.<name>. Policies are
+// validated against it at compile time (internal/policy), so a typo or a
+// fact this build does not know is rejected instead of failing every
+// evaluation.
+func Keys() []string {
+	m := Facts{}.Map()
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // Map is the CEL-facing form. Every key is always present, so rules can read
@@ -49,6 +70,7 @@ func (f Facts) Map() map[string]bool {
 		"opaque":         f.Opaque,
 		"inline_dynamic": f.InlineDynamic,
 		"self_tamper":    f.SelfTamper,
+		"self_secret":    f.SelfSecret,
 	}
 }
 
@@ -60,6 +82,17 @@ func (f *Facts) destructive(reason string) {
 func (f *Facts) secret(reason string) {
 	f.SecretAccess = true
 	f.add(reason)
+}
+
+// secretPath is secret for a detector that resolved the path it flagged:
+// when that path is actiongate's own, it also sets SelfSecret — decided on
+// the analyzer's resolved path, never by re-reading the raw text.
+func (f *Facts) secretPath(p, reason string) {
+	f.secret(reason)
+	if IsActiongateSecretPath(p) {
+		f.SelfSecret = true
+		f.add("reads actiongate's own secrets (its config directory)")
+	}
 }
 
 func (f *Facts) opaque(reason string) {
@@ -87,6 +120,7 @@ func (f *Facts) merge(o Facts) {
 	f.Opaque = f.Opaque || o.Opaque
 	f.InlineDynamic = f.InlineDynamic || o.InlineDynamic
 	f.SelfTamper = f.SelfTamper || o.SelfTamper
+	f.SelfSecret = f.SelfSecret || o.SelfSecret
 	for _, r := range o.Reasons {
 		f.add(r)
 	}
@@ -145,18 +179,18 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 			p = str("notebook_path")
 		}
 		if IsSecretPath(p) {
-			f.secret("file tool on secret path " + path.Base(slash(p)))
+			f.secretPath(p, "file tool on secret path "+path.Base(slash(p)))
 		}
 		if tool != "Read" && IsControlPath(p) {
 			f.selfTamper(tool + " on actiongate control file " + path.Base(slash(p)))
 		}
 	case "read_file":
 		if p := str("path"); IsSecretPath(p) {
-			f.secret("file tool on secret path " + path.Base(slash(p)))
+			f.secretPath(p, "file tool on secret path "+path.Base(slash(p)))
 		}
 	case "Grep":
 		if p := str("path"); IsSecretPath(p) {
-			f.secret("grep inside secret path " + path.Base(slash(p)))
+			f.secretPath(p, "grep inside secret path "+path.Base(slash(p)))
 		}
 		if g := str("glob"); g != "" && globMatchesSecret(g) {
 			f.secret("grep glob covers secret files: " + g)
@@ -170,6 +204,17 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 		if p, ok := findString(params, 0, func(s string) bool { return IsControlPath(s) || IsControlDir(s) }); ok {
 			f.selfTamper(tool + " on actiongate control path " + path.Base(slash(p)))
 		}
+		// ...and may read any path it is given.
+		if p, ok := findString(params, 0, IsActiongateSecretPath); ok {
+			f.secretPath(p, tool+" on actiongate secret path "+path.Base(slash(p)))
+		}
+	}
+	// The detectors set SelfSecret from the path they resolved. As a
+	// second, fail-closed net: a secret access whose raw text also names
+	// actiongate's config directory counts too (it can only add a deny).
+	if f.SecretAccess && mentionsActiongateSecret(params) {
+		f.SelfSecret = true
+		f.add("reads actiongate's own secrets (its config directory)")
 	}
 	return f
 }
@@ -213,6 +258,9 @@ func IsSecretPath(p string) bool {
 	p = strings.Trim(strings.TrimSpace(p), `"'`)
 	if p == "" {
 		return false
+	}
+	if IsActiongateSecretPath(p) {
+		return true
 	}
 	p = strings.ToLower(slash(p))
 	base := path.Base(p)

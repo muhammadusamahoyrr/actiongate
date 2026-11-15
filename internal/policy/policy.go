@@ -38,7 +38,23 @@ const (
 	// DefaultRuleID marks a decision produced by the snapshot default, not a
 	// rule. It is reserved: snapshots may not define a rule with this id.
 	DefaultRuleID = "__default__"
+
+	// Built-in protections apply whatever pack is active, so a pack cannot
+	// switch actiongate's own protection off (audit C1–C3). Their ids are
+	// reserved like DefaultRuleID.
+	//
+	// BuiltinSecretsRuleID denies reading actiongate's own secrets
+	// (facts.self_secret), before any pack rule is evaluated.
+	BuiltinSecretsRuleID = "__builtin_actiongate_secrets__"
+	// BuiltinTamperRuleID raises an allowed self-tamper action
+	// (facts.self_tamper) to requires_approval. A pack may be stricter
+	// (deny) but not looser.
+	BuiltinTamperRuleID = "__builtin_self_tamper__"
 )
+
+func reservedRuleID(id string) bool {
+	return id == DefaultRuleID || id == BuiltinSecretsRuleID || id == BuiltinTamperRuleID
+}
 
 var ErrNotBoolean = errors.New("rule condition does not evaluate to a boolean")
 
@@ -137,7 +153,7 @@ func (e *Engine) Compile(cfg SnapshotConfig) (*CompiledSnapshot, error) {
 		if r.ID == "" {
 			return nil, fmt.Errorf("rule %d: missing id", i)
 		}
-		if r.ID == DefaultRuleID {
+		if reservedRuleID(r.ID) {
 			return nil, fmt.Errorf("rule %q: reserved id", r.ID)
 		}
 		if seen[r.ID] {
@@ -157,6 +173,9 @@ func (e *Engine) Compile(cfg SnapshotConfig) (*CompiledSnapshot, error) {
 		}
 		if !ast.OutputType().IsExactType(cel.BoolType) {
 			return nil, fmt.Errorf("rule %q: %w (got %s)", r.ID, ErrNotBoolean, ast.OutputType())
+		}
+		if err := checkFactRefs(ast); err != nil {
+			return nil, fmt.Errorf("rule %q: %w", r.ID, err)
 		}
 		// OptOptimize folds constants at plan time, including compiling
 		// constant regex patterns in matches() once instead of per call.
@@ -183,11 +202,36 @@ func (s *CompiledSnapshot) Evaluate(in Input) (Decision, error) {
 	if in.Params == nil {
 		activation["params"] = map[string]any{}
 	}
-	if in.Facts == nil {
-		activation["facts"] = facts.Derive(in.ToolName, in.Params).Map()
+	fm := in.Facts
+	if fm == nil {
+		fm = facts.Derive(in.ToolName, in.Params).Map()
+		activation["facts"] = fm
 	}
 
-	trace := make([]RuleTrace, 0, len(s.rules))
+	trace := make([]RuleTrace, 0, len(s.rules)+1)
+	if fm["self_secret"] {
+		return Decision{
+			Decision:           Deny,
+			RiskClassification: "actiongate_secrets",
+			MatchedRuleID:      BuiltinSecretsRuleID,
+			Trace:              []RuleTrace{{RuleID: BuiltinSecretsRuleID, Condition: "facts.self_secret (built-in)", Matched: true}},
+		}, nil
+	}
+	d, err := s.evaluateRules(activation, trace)
+	if err != nil {
+		return Decision{}, err
+	}
+	if d.Decision == Allow && fm["self_tamper"] {
+		d.Trace = append(d.Trace, RuleTrace{RuleID: BuiltinTamperRuleID, Condition: "facts.self_tamper (built-in floor)", Matched: true})
+		d.Decision = RequiresApproval
+		d.RiskClassification = "self_tamper"
+		d.MatchedRuleID = BuiltinTamperRuleID
+	}
+	return d, nil
+}
+
+// evaluateRules is first-match over the pack's own rules, then the default.
+func (s *CompiledSnapshot) evaluateRules(activation map[string]any, trace []RuleTrace) (Decision, error) {
 	for _, cr := range s.rules {
 		out, _, err := cr.program.Eval(activation)
 		if err != nil {

@@ -23,6 +23,86 @@ func TestIsControlPath(t *testing.T) {
 	}
 }
 
+func TestIsActiongateSecretPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		`C:\Users\x\AppData\Roaming\actiongate\dev.json`:           true,
+		`C:\Users\x\AppData\Roaming\actiongate\pgdata\base\1\1259`: true,
+		`C:\Users\x\AppData\Roaming\actiongate`:                    true, // the directory itself (grep, tar)
+		"/home/x/.config/actiongate/gateway.json":                  true,
+		"/Users/x/Library/Application Support/actiongate/dev.json": true,
+		"$APPDATA/actiongate/dev.json":                             true,
+		`$env:APPDATA\actiongate\gateway.json`:                     true,
+		"/anything/actiongate/dev.json":                            true, // parent may be unresolvable
+		"/home/x/.config/x/../actiongate/pgdata/f":                 true, // .. resolved
+		`C:\Users\x\AppData\Roaming\ACTION~1\dev.json`:             true, // 8.3 short name
+		`C:\Users\x\APPDAT~1\Roaming\actiongate\gateway.json`:      true,
+		`C:\Users\x\AppData\Roaming\ACTION~2\DEVJSO~1.JSO`:         true,
+		"/home/x/src/actiongate/README.md":                         false,
+		"/home/x/src/actiongate/internal/facts/facts.go":           false,
+		"/home/x/app/dev.json":                                     false,
+		"gateway.json":                                             false,
+	} {
+		if got := IsActiongateSecretPath(p); got != want {
+			t.Errorf("IsActiongateSecretPath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}
+
+func TestSelfSecretFollowsSetLocation(t *testing.T) {
+	for _, cmd := range []string{
+		`Set-Location $env:APPDATA\actiongate; Get-Content dev.json`,
+		`cd C:\Users\x\AppData\Roaming; Get-Content actiongate\gateway.json`,
+		`Push-Location ~\.config\actiongate; cat dev.json`,
+	} {
+		if f := Derive("PowerShell", map[string]any{"command": cmd}); !f.SelfSecret {
+			t.Errorf("%s: self_secret=false (%v)", cmd, f.Reasons)
+		}
+	}
+	// Variable/expression operands may name the current directory, and a
+	// later move away is never trusted (popd / cd - / subshells can come
+	// back): both fail closed.
+	for _, c := range []struct{ tool, cmd string }{
+		{"PowerShell", `Set-Location $env:APPDATA\actiongate; Get-Content $PWD\dev.json`},
+		{"PowerShell", `Set-Location $env:APPDATA\actiongate; Get-Content (Get-Location)\gateway.json`},
+		{"PowerShell", `Push-Location $env:APPDATA\actiongate; Set-Location C:\src; Pop-Location; Get-Content dev.json`},
+		{"Bash", `cd ~/.config/actiongate && cat "$PWD/dev.json"`},
+		{"Bash", "pushd ~/.config/actiongate; cd /tmp; popd; cat dev.json"},
+		{"Bash", "cd ~/.config/actiongate; cd -; cd -; cat dev.json"},
+	} {
+		if f := Derive(c.tool, map[string]any{"command": c.cmd}); !f.SelfSecret {
+			t.Errorf("%s %s: self_secret=false (%v)", c.tool, c.cmd, f.Reasons)
+		}
+	}
+	// Commands that never enter the directory are untouched.
+	if f := Derive("Bash", map[string]any{"command": "cd /home/x/src && cat README.md"}); f.SelfSecret {
+		t.Errorf("unrelated cd: %v", f.Reasons)
+	}
+}
+
+func TestSelfSecretNeedsARead(t *testing.T) {
+	if f := Derive("Bash", map[string]any{"command": "ls ~/.config/actiongate"}); f.SelfSecret {
+		t.Errorf("listing the directory is not a read: %v", f.Reasons)
+	}
+	for _, cmd := range []string{
+		"cat ~/.config/actiongate/dev.json",
+		`cat ~/.config/action"gate"/dev.json`, // quoting the raw-text split would miss
+		`cat ~/.config/'actiongate'/gateway.json`,
+		`bash -c "cat ~/.config/actiongate/dev.json"`,
+		`python3 -c "print(open('/home/x/.config/actiongate/dev.json').read())"`,
+		// cwd-relative reads after entering the config directory
+		"cd ~/.config/actiongate && cat dev.json",
+		"cd /home/x/.config && cat actiongate/gateway.json",
+		`cd "$APPDATA/actiongate"; head -c 200 gateway.json`,
+		"cd ~/.config/actiongate && grep -r seed .",
+		"pushd ~/.config/actiongate && tar czf /tmp/x.tgz pgdata",
+		"cd ~/.config/actiongate && wc -c < dev.json",
+	} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); !f.SelfSecret || !f.SecretAccess {
+			t.Errorf("%s: self_secret=%v secret=%v (%v)", cmd, f.SelfSecret, f.SecretAccess, f.Reasons)
+		}
+	}
+}
+
 // deepNest returns n levels of nested maps around a harmless string.
 func deepNest(n int) any {
 	var v any = "src/main.go"

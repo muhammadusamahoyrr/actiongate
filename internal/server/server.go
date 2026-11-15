@@ -29,6 +29,7 @@ import (
 	"github.com/muhammadusamahoyrr/actiongate/internal/dbruntime"
 	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
+	"github.com/muhammadusamahoyrr/actiongate/internal/facts"
 	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
 	"github.com/muhammadusamahoyrr/actiongate/internal/health"
 	"github.com/muhammadusamahoyrr/actiongate/internal/orchestrator"
@@ -371,6 +372,10 @@ type healthzResponse struct {
 	Tenant      healthzComponent `json:"tenant"`
 	SigningKeys healthzComponent `json:"signing_keys"`
 	Sealer      healthzComponent `json:"sealer"`
+	// Facts lists the fact names this build derives, so a tool about to
+	// apply a policy can check the RUNNING control plane understands it
+	// (an older build would fail every evaluation on an unknown fact).
+	Facts []string `json:"facts"`
 }
 
 // handleHealthz reports liveness and the composite health of every component.
@@ -395,6 +400,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		Tenant:      comp(rep.Tenant),
 		SigningKeys: comp(rep.Keys),
 		Sealer:      comp(rep.Sealer),
+		Facts:       facts.Keys(),
 	}
 	if !rep.Database.Healthy {
 		resp.Status = "degraded"

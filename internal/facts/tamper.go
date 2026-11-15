@@ -45,8 +45,9 @@ func IsControlPath(p string) bool {
 	return matchName(base, "dev.json") && matchName(parent, "actiongate")
 }
 
-// matchName reports whether one path component is, or as a glob could
-// expand to, one of names.
+// matchName reports whether one path component is, or could stand for, one
+// of names: as a glob that could expand to it, or as a Windows 8.3 short
+// name that could alias it (ACTION~1 for actiongate, SETTIN~1.JSO).
 func matchName(component string, names ...string) bool {
 	glob := strings.ContainsAny(component, "*?[")
 	for _, n := range names {
@@ -56,8 +57,35 @@ func matchName(component string, names ...string) bool {
 		if ok, _ := path.Match(component, n); glob && ok {
 			return true
 		}
+		if shortNameMatch(component, n) {
+			return true
+		}
 	}
 	return false
+}
+
+// shortNameMatch reports whether component is an 8.3 short name that could
+// belong to name: up to six leading characters of the name's stem, ~N, and
+// optionally up to three leading characters of its extension. Which ~N a
+// file gets is not knowable statically, so any N matches (fail closed).
+func shortNameMatch(component, name string) bool {
+	stem, ext, _ := strings.Cut(component, ".")
+	pre, num, ok := strings.Cut(stem, "~")
+	if !ok || pre == "" || len(pre) > 6 || num == "" || len(ext) > 3 {
+		return false
+	}
+	for _, r := range num {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	// Short names drop dots and spaces from the long stem.
+	nStem, nExt := name, ""
+	if i := strings.LastIndex(name, "."); i > 0 {
+		nStem, nExt = name[:i], name[i+1:]
+	}
+	nStem = strings.NewReplacer(".", "", " ", "").Replace(nStem)
+	return strings.HasPrefix(nStem, pre) && strings.HasPrefix(nExt, ext)
 }
 
 // IsControlDir reports whether a path names a directory that holds control
@@ -122,10 +150,12 @@ func normPath(p string) string {
 		parts[i] = c
 	}
 	p = strings.Join(parts, "/")
-	if len(p) > 1 {
-		p = strings.TrimRight(p, "/")
+	if p == "" {
+		return ""
 	}
-	return p
+	// Resolve . and .. lexically: ~/.config/x/../actiongate/pgdata is the
+	// config dir, whatever the spelling.
+	return path.Clean(p)
 }
 
 func isAbsPath(p string) bool {
@@ -207,6 +237,17 @@ func (a *shellAnalyzer) tamperArgs(name string, rest []arg) {
 			}
 		}
 		a.cwd.cd(target, literal)
+		// cwdSecret is never cleared within one command line: popd, cd -
+		// and subshells can return to the config directory, and the
+		// analyzer cannot scope them. Over-reporting is the safe side.
+		// Entering actiongate's config directory — by any spelling,
+		// including an unreadable variable ($APPDATA/actiongate) — makes
+		// relative reads after it reads of its secrets.
+		for _, r := range []string{target, a.cwd.dir} {
+			if r != "" && r != unknownDir && IsActiongateSecretPath(r) {
+				a.cwdSecret, a.cwdSecretDir = true, slash(r)
+			}
+		}
 		return
 	}
 	hit := func(why string) { a.f.selfTamper(name + " " + why) }
@@ -397,8 +438,30 @@ var psNetWriters = []string{"writealltext", "writeallbytes", "writealllines", "a
 	"::delete", "::move", "::copy", "::replace", "::create", "openwrite", "streamwriter", "setaccesscontrol"}
 
 // psTamperState carries the working directory across the statements of one
-// PowerShell command.
-type psTamperState struct{ cwd cwdTracker }
+// PowerShell command. cwdSecret: a Set-Location entered actiongate's
+// config directory (cwdSecretDir), so relative reads after it are reads
+// of its secrets.
+type psTamperState struct {
+	cwd          cwdTracker
+	cwdSecret    bool
+	cwdSecretDir string
+}
+
+// secretOperand is the PowerShell twin of shellAnalyzer.secretOperand: an
+// operand is judged on the path it names after Set-Location.
+func (st *psTamperState) secretOperand(a string, copying bool) (string, bool) {
+	for _, r := range st.cwd.resolve(a) {
+		if IsSecretPath(r) || isSecretDir(r) && copying || strings.ContainsAny(r, "*?") && globMatchesSecret(r) {
+			return r, true
+		}
+	}
+	// A variable or expression operand ($PWD\dev.json, (Get-Location)\x)
+	// may name the current directory: fail closed.
+	if st.cwdSecret && a != "" && !isAbsPath(a) && !strings.HasPrefix(a, "-") {
+		return st.cwdSecretDir + "/" + slash(a), true
+	}
+	return "", false
+}
 
 // psCandidates turns one token into the paths it may hold: a -Name:value
 // parameter loses its prefix (a bare -Name holds no path), and
@@ -459,7 +522,13 @@ func (st *psTamperState) statement(toks []string) (string, bool) {
 		u := strings.Trim(t, `"'`)
 		if location {
 			if c := psCandidates(t); len(c) > 0 {
-				st.cwd.cd(c[0], !strings.ContainsAny(c[0], "$("))
+				literal := !strings.ContainsAny(c[0], "$(")
+				st.cwd.cd(c[0], literal) // cwdSecret is never cleared (see tamperArgs)
+				for _, r := range []string{c[0], st.cwd.dir} {
+					if r != "" && r != unknownDir && IsActiongateSecretPath(r) {
+						st.cwdSecret, st.cwdSecretDir = true, slash(r)
+					}
+				}
 				location = false
 			}
 			continue
@@ -489,6 +558,50 @@ func (st *psTamperState) statement(toks []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// IsActiongateSecretPath reports whether a path lies in actiongate's own
+// per-user config directory, or is that directory: dev.json (DB password,
+// token secret, signing seeds, Slack secret), gateway.json (the gateway's
+// bearer credential and Ed25519 seed), pgdata (the database files),
+// postgres.log. dev.json and gateway.json count under any directory named
+// actiongate, since its parent may be a variable the analyzer cannot read.
+// Nothing in it is something an agent needs to read.
+func IsActiongateSecretPath(p string) bool {
+	p = normPath(p)
+	if p == "" {
+		return false
+	}
+	if matchName(path.Base(p), "dev.json", "gateway.json", "gateway.json.lock") && matchName(path.Base(path.Dir(p)), "actiongate") {
+		return true
+	}
+	for q := p; ; q = path.Dir(q) {
+		if isActiongateConfigDir(q) {
+			return true
+		}
+		if parent := path.Dir(q); parent == q || parent == "." {
+			return false
+		}
+	}
+}
+
+// mentionsActiongateSecret reports whether any string in params, or any
+// word of one (a shell command), names an actiongate secret path.
+func mentionsActiongateSecret(params map[string]any) bool {
+	_, ok := findString(params, 0, func(s string) bool {
+		if IsActiongateSecretPath(s) {
+			return true
+		}
+		for _, w := range strings.FieldsFunc(s, func(r rune) bool {
+			return strings.ContainsRune(" \t\r\n'\"`;|&<>()=,{}", r)
+		}) {
+			if IsActiongateSecretPath(w) {
+				return true
+			}
+		}
+		return false
+	})
+	return ok
 }
 
 func (f *Facts) selfTamper(reason string) {

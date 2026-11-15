@@ -108,6 +108,10 @@ type shellAnalyzer struct {
 	// cwd follows cd/pushd so relative writes are judged on the path they
 	// really hit (see tamper.go).
 	cwd cwdTracker
+	// cwdSecret: a cd/pushd entered actiongate's config directory
+	// (cwdSecretDir), so relative reads after it are its secrets.
+	cwdSecret    bool
+	cwdSecretDir string
 }
 
 // stdinSource: piped means content the analyzer cannot see (a pipe);
@@ -127,8 +131,8 @@ func (a *shellAnalyzer) visit(node syntax.Node) bool {
 	case *syntax.Stmt:
 		for _, r := range n.Redirs {
 			if r.Op == syntax.RdrIn || r.Op == syntax.RdrInOut {
-				if t := a.approx(r.Word); IsSecretPath(t) {
-					a.f.secret("redirects a secret file into a command")
+				if t, ok := a.secretOperand(a.approx(r.Word)); ok {
+					a.f.secretPath(t, "redirects a secret file into a command")
 				}
 			}
 			switch r.Op {
@@ -441,12 +445,30 @@ func (a *shellAnalyzer) secretArgs(name string, rest []arg) {
 			continue // hands the file to a container; the agent never sees it
 		}
 		for _, c := range pathCandidates(x.text) {
-			if IsSecretPath(c) || isSecretDir(c) || strings.ContainsAny(c, "*?[") && globMatchesSecret(strings.ReplaceAll(c, `\`, "")) {
-				a.f.secret(name + " reads secret file " + c)
+			if p, ok := a.secretOperand(c); ok {
+				a.f.secretPath(p, name+" reads secret file "+c)
 				return
 			}
 		}
 	}
+}
+
+// secretOperand reports whether a reader's operand is a secret, judged on
+// the path it really names: resolved against the directory cd/pushd moved
+// to. After a cd into actiongate's config directory — even one spelled
+// through a variable the analyzer cannot read — any relative operand is
+// treated as one of its files (cd ~/.config/actiongate && cat dev.json).
+// Returns the path to report, which decides self_secret.
+func (a *shellAnalyzer) secretOperand(c string) (string, bool) {
+	for _, r := range a.cwd.resolve(c) {
+		if IsSecretPath(r) || isSecretDir(r) || strings.ContainsAny(r, "*?[") && globMatchesSecret(strings.ReplaceAll(r, `\`, "")) {
+			return r, true
+		}
+	}
+	if a.cwdSecret && !isAbsPath(c) && !strings.HasPrefix(c, "-") && c != "" {
+		return a.cwdSecretDir + "/" + slash(c), true
+	}
+	return "", false
 }
 
 // operands drops a reader's leading pattern or program (grep PATTERN FILE,
@@ -504,7 +526,7 @@ func inspectCode(code string, depth int, o Options) Facts {
 	}
 	for _, s := range stringLiterals(code) {
 		if IsSecretPath(s) {
-			f.secret("inline code opens secret file " + s)
+			f.secretPath(s, "inline code opens secret file "+s)
 		}
 		if IsControlPath(s) {
 			f.selfTamper("inline code names actiongate control file " + s)
@@ -516,6 +538,10 @@ func inspectCode(code string, depth int, o Options) Facts {
 			}
 			if inner.SecretAccess {
 				f.secret("inline code runs a shell command that reads secrets")
+			}
+			if inner.SelfSecret {
+				f.SelfSecret = true
+				f.add("inline code runs a shell command that reads actiongate's own secrets")
 			}
 			if inner.SelfTamper {
 				f.selfTamper("inline code runs a shell command that modifies actiongate control files")

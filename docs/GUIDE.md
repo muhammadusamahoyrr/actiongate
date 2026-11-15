@@ -230,11 +230,21 @@ A policy is JSON: a `default_decision` plus an ordered list of rules.
   `.claude/settings*.json`, `ag-hook`, `gateway.json`, the dev install's
   `dev.json`, or the `.claude` / actiongate config directory itself;
   relative paths are resolved through `cd`/`Set-Location`; reading them is
-  not tamper). They cover Bash,
+  not tamper), and `facts.self_secret` (reads anything in ActionGate's own
+  config directory: `dev.json`, `gateway.json`, the database files). They
+  cover Bash,
   PowerShell and the file tools; every key is always present, so no `has()`
-  guard is needed. Prefer facts over `params.command.contains(...)`: text
+  guard is needed. A fact name the control plane does not know (a typo, or
+  a fact from a newer build) is rejected when the policy is set, and
+  `actiongate protect` refuses to apply a pack the *running* control plane
+  cannot evaluate. Prefer facts over `params.command.contains(...)`: text
   matching misses `rm -fr`, `rm -r -f` and `bash -c '...'`
   ([evaluation](paper/main.pdf)).
+- **Built-in protection** applies whatever pack is active: reading
+  ActionGate's own secrets (`facts.self_secret`) is always denied, before
+  any pack rule runs, and an action that would change its enforcement
+  (`facts.self_tamper`) is never simply allowed. It needs at least an
+  approval, and a pack may deny it outright.
 - **Decisions** are `allow`, `deny`, or `requires_approval`.
 - Policies are **compiled before they are stored** — a syntactically broken
   rule, an unknown variable, or a non-boolean condition is rejected at
@@ -421,7 +431,7 @@ the signed outcome receipt.
 |---|---|---|
 | `AG_DATABASE_URL` | yes | Postgres connection string |
 | `AG_TOKEN_SECRET` | yes (≥ 32 bytes) | HMAC secret for approval callback tokens |
-| `AG_LISTEN` | no (`:8091`) | Control plane listen address |
+| `AG_LISTEN` | no (`127.0.0.1:8091`) | Control plane listen address. Loopback by default: it serves plain HTTP with an unauthenticated enrollment and approval callback. A host-less `:PORT` is narrowed to `127.0.0.1`; to listen on the network name the host (`0.0.0.0:8091`) and put TLS in front |
 | `AG_GRANT_KEY_SEED` / `AG_EPOCH_KEY_SEED` | recommended | Base64 32-byte signing seeds; ephemeral (with a loud warning) if unset |
 | `AG_APPROVER_DEFAULT` | no (`team-lead`) | Default approver target |
 | `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals |

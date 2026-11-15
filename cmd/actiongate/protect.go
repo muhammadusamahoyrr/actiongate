@@ -8,10 +8,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +22,7 @@ import (
 	"github.com/muhammadusamahoyrr/actiongate/internal/admin"
 	"github.com/muhammadusamahoyrr/actiongate/internal/fsutil"
 	"github.com/muhammadusamahoyrr/actiongate/internal/gateway"
+	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
 	"github.com/muhammadusamahoyrr/actiongate/policies"
 )
 
@@ -205,6 +209,9 @@ func ensurePolicyPack(ctx context.Context, packName string, packJSON []byte) err
 	}
 	_ = tx.Rollback(ctx)
 
+	if err := checkControlPlaneKnowsFacts(ctx, cfg.ServerURL, packJSON); err != nil {
+		return err
+	}
 	version, err := admin.SetPolicy(ctx, pool, tenantID, packJSON)
 	if err != nil {
 		return err
@@ -358,6 +365,73 @@ func mergeHookSettings(settingsPath string, raw []byte, exists bool, command, ma
 		return nil, err
 	}
 	return append(out, '\n'), nil
+}
+
+// legacyFacts is what a control plane too old to report its facts derives.
+var legacyFacts = []string{"destructive", "inline_dynamic", "opaque", "secret_access"}
+
+// checkControlPlaneKnowsFacts refuses a pack that reads a fact the RUNNING
+// control plane does not derive. Applied anyway, an older control plane
+// fails every evaluation on the unknown fact, and every governed tool call
+// on the machine is blocked until it is restarted on a newer build.
+func checkControlPlaneKnowsFacts(ctx context.Context, serverURL string, packJSON []byte) error {
+	var cfg policy.SnapshotConfig
+	if err := json.Unmarshal(packJSON, &cfg); err != nil {
+		return err
+	}
+	engine, err := policy.NewEngine()
+	if err != nil {
+		return err
+	}
+	used, err := engine.FactsUsed(cfg)
+	if err != nil {
+		return err
+	}
+	have, reachable := controlPlaneFacts(ctx, serverURL)
+	if !reachable {
+		fmt.Println("• policy pack: control plane not answering — make sure the one you start is this build or newer")
+		return nil
+	}
+	known := map[string]bool{}
+	for _, f := range have {
+		known[f] = true
+	}
+	var missing []string
+	for _, f := range used {
+		if !known[f] {
+			missing = append(missing, f)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the control plane at %s is an older build that does not know facts %v; applying this pack would block every governed action. Restart it on this build first (`actiongate service stop`, replace the binary, `actiongate service start`), then re-run protect",
+			serverURL, missing)
+	}
+	return nil
+}
+
+// controlPlaneFacts asks the control plane which facts it derives.
+func controlPlaneFacts(ctx context.Context, serverURL string) ([]string, bool) {
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, serverURL+"/healthz", nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Facts *[]string `json:"facts"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return nil, false
+	}
+	if body.Facts == nil {
+		return legacyFacts, true // answers, but predates the facts field
+	}
+	return *body.Facts, true
 }
 
 // ourPreToolUseCommand finds actiongate's PreToolUse hook command in a
