@@ -32,12 +32,17 @@ func TestScriptsRun(t *testing.T) {
 		{"PowerShell", `pwsh -File C:\t\x.ps1`, []Script{{Path: `C:\t\x.ps1`, Via: "powershell"}}},
 
 		// An option the model does not know before the operand: uncertain.
-		{"Bash", "bash --rcfile evil.sh x.sh", []Script{{Path: "x.sh", Via: "shell"}}}, // --rcfile modelled
 		{"Bash", "bash --frobnicate evil.sh x.sh", []Script{{Path: "evil.sh", Via: "shell", Uncertain: true}}},
 		{"Bash", "python3 -Z x.py job.py", []Script{{Path: "x.py", Via: "python", Uncertain: true}}},
 		{"Bash", "node --some-flag a.js", []Script{{Path: "a.js", Via: "node", Uncertain: true}}},
 		{"Bash", "node --no-warnings a.js", []Script{{Path: "a.js", Via: "node"}}},
 		{"Bash", "bash -s x.sh", nil}, // script from stdin; x.sh is an argument
+		// Options that load more code, or change directory: uncertain.
+		{"Bash", "node -r ./evil.js app.js", []Script{{Path: "app.js", Via: "node", Uncertain: true}}},
+		{"Bash", "node --require=./evil.js app.js", []Script{{Path: "app.js", Via: "node", Uncertain: true}}},
+		{"Bash", "ruby -C /tmp x.rb", []Script{{Path: "x.rb", Via: "ruby", Uncertain: true}}},
+		{"Bash", "perl -MEvil x.pl", []Script{{Path: "x.pl", Via: "perl", Uncertain: true}}},
+		{"Bash", "bash --rcfile evil.sh x.sh", []Script{{Path: "x.sh", Via: "shell", Uncertain: true}}},
 
 		// Inline shell code that runs a script is followed.
 		{"Bash", `bash -c "bash cleanup.sh"`, []Script{{Path: "cleanup.sh", Via: "shell"}}},
@@ -110,6 +115,15 @@ func TestDeriveJudgesAttachedScripts(t *testing.T) {
 		{"exec: python3.11 shebang", withScript("./x",
 			map[string]any{"path": "./x", "via": "exec", "content": "#!/usr/bin/python3.11\nprint(open('.env').read())\n"}),
 			func(f Facts) bool { return f.SecretAccess }},
+		{"exec: harmless shebang switches are fine", withScript("./x",
+			map[string]any{"path": "./x", "via": "exec", "content": "#!/bin/bash -eu\nrm -rf ~\n"}),
+			func(f Facts) bool { return f.Destructive && !f.Opaque }},
+		{"exec: shebang with inline code is opaque", withScript("./x",
+			map[string]any{"path": "./x", "via": "exec", "content": "#!/bin/sh -c 'rm -rf ~'\necho hi\n"}),
+			func(f Facts) bool { return f.Opaque }},
+		{"exec: env -S with an rc file is opaque", withScript("./x",
+			map[string]any{"path": "./x", "via": "exec", "content": "#!/usr/bin/env -S bash --rcfile evil.sh\necho hi\n"}),
+			func(f Facts) bool { return f.Opaque }},
 		{"sourcing a secret is a secret read", withScript("source .env",
 			map[string]any{"path": ".env", "via": "shell", "secret": true}),
 			func(f Facts) bool { return f.SecretAccess }},

@@ -92,6 +92,10 @@ type runnerOpts struct {
 	noValue, value         string          // short options
 	longNoValue, longValue map[string]bool // long options (--x=y is always self-contained)
 	inline                 map[string]bool // code given inline / from stdin: no script operand
+	// unsure lists options (short "-r" or long "--require") whose value is
+	// code that also gets loaded, or that change directory: the analyzer
+	// does not read that code, so the operand is uncertain (opaque).
+	unsure map[string]bool
 }
 
 var runners = map[string]runnerOpts{
@@ -100,6 +104,7 @@ var runners = map[string]runnerOpts{
 		longNoValue: set("--norc", "--noprofile", "--login", "--posix", "--verbose", "--noediting", "--restricted", "--debugger", "--help", "--version"),
 		longValue:   set("--rcfile", "--init-file"),
 		inline:      set("-c", "-s"),
+		unsure:      set("--rcfile", "--init-file"),
 	},
 	"python": {
 		noValue: "bBdEhiIOPqsSuvVxR", value: "WXQ",
@@ -113,10 +118,11 @@ var runners = map[string]runnerOpts{
 			"--abort-on-uncaught-exception", "--trace-uncaught", "--help", "--version"),
 		longValue: set("--require", "--import", "--loader", "--experimental-loader", "--env-file", "--max-old-space-size"),
 		inline:    set("-e", "-p", "--eval", "--print", "-"),
+		unsure:    set("-r", "--require", "--import", "--loader", "--experimental-loader"),
 	},
-	"perl":  {noValue: "wWXtTcnpasluU0", value: "IM", inline: set("-e", "-E", "-")},
-	"ruby":  {noValue: "wWvcdynpalhs", value: "IrEC", inline: set("-e", "-")},
-	"php":   {noValue: "hvqsnailw", value: "dcz", inline: set("-r", "-")},
+	"perl":  {noValue: "wWXtTcnpasluU0", value: "IMm", inline: set("-e", "-E", "-"), unsure: set("-M", "-m")},
+	"ruby":  {noValue: "wWvcdynpalhs", value: "IrEC", inline: set("-e", "-"), unsure: set("-r", "-C")},
+	"php":   {noValue: "hvqsnailw", value: "dcz", inline: set("-r", "-"), unsure: set("-z")},
 	"deno":  {inline: set("--eval", "-")},
 	"bun":   {inline: set("-e", "--eval", "-")},
 	"other": {inline: set("-c", "-e", "-")},
@@ -249,6 +255,9 @@ func scriptOperand(rest []arg, ro runnerOpts) (op string, ok, uncertain bool) {
 			return "", false, false
 		case strings.HasPrefix(t, "--"):
 			name, _, hasVal := strings.Cut(t, "=")
+			if ro.unsure[name] {
+				uncertain = true
+			}
 			switch {
 			case hasVal || ro.longNoValue[name]:
 			case ro.longValue[name]:
@@ -263,6 +272,9 @@ func scriptOperand(rest []arg, ro runnerOpts) (op string, ok, uncertain bool) {
 				o := "-" + string(r)
 				if ro.inline[o] {
 					return "", false, false // bash -ec '...', python -Bc '...'
+				}
+				if ro.unsure[o] {
+					uncertain = true // node -r x, ruby -C dir, perl -MFoo
 				}
 				if strings.ContainsRune(ro.value, r) {
 					if j == len(t)-2 {
@@ -415,24 +427,57 @@ func shebangKind(line string) string {
 	if len(fields) == 0 {
 		return "shell"
 	}
-	interp := cmdName(fields[0])
+	interp, args := cmdName(fields[0]), fields[1:]
 	if interp == "env" {
-		interp = ""
-		for _, f := range fields[1:] {
+		interp, args = "", nil
+		for i, f := range fields[1:] {
 			if strings.HasPrefix(f, "-") || strings.Contains(f, "=") {
 				continue // env -S, env FOO=bar
 			}
-			interp = cmdName(f)
+			interp, args = cmdName(f), fields[i+2:]
 			break
 		}
 	}
+	kind, ro := "unknown", runnerOpts{}
 	switch {
 	case shells[interp] && interp != "fish", interp == "ash", interp == "mksh":
-		return "shell"
+		kind, ro = "shell", runners["shell"]
 	case interp == "pwsh" || interp == "powershell":
-		return "powershell"
-	case interpreters[interp], strings.HasPrefix(interp, "python"), strings.HasPrefix(interp, "node"):
-		return "code" // python3.11, nodejs
+		return "unknown" // pwsh shebang options are not modelled
+	case strings.HasPrefix(interp, "python"):
+		kind, ro = "code", runners["python"]
+	case interp == "node" || interp == "nodejs":
+		kind, ro = "code", runners["node"]
+	case interpreters[interp]:
+		kind, ro = "code", runners[interp]
 	}
-	return "unknown"
+	if kind == "unknown" {
+		return kind
+	}
+	// Interpreter arguments must be harmless switches (#!/bin/bash -eu,
+	// #!/usr/bin/python3 -u). Anything else — inline code, an rc file, a
+	// module to load, an option not modelled — changes what runs: opaque.
+	for _, a := range args {
+		if !harmlessSwitch(a, ro) {
+			return "unknown"
+		}
+	}
+	return kind
+}
+
+// harmlessSwitch: a, a single word, is only no-value options the runner
+// model lists.
+func harmlessSwitch(a string, ro runnerOpts) bool {
+	if strings.HasPrefix(a, "--") {
+		return ro.longNoValue[a]
+	}
+	if !strings.HasPrefix(a, "-") || len(a) < 2 {
+		return false
+	}
+	for _, r := range a[1:] {
+		if !strings.ContainsRune(ro.noValue, r) || ro.inline["-"+string(r)] || ro.unsure["-"+string(r)] {
+			return false
+		}
+	}
+	return true
 }

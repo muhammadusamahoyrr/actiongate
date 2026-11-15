@@ -79,8 +79,15 @@ func readScript(s facts.Script, cwd string) map[string]any {
 	}
 	p := resolveScriptPath(s.Path, cwd)
 	// Never copy a secret into the action (it would be stored with it):
-	// `source .env` is reported as reading a secret, not attached.
-	if facts.IsSecretPath(s.Path) || facts.IsSecretPath(p) {
+	// `source .env` is reported as reading a secret, not attached. The
+	// check covers the name as written, the resolved path and, through any
+	// symlink, the file actually read (notes.sh -> .env).
+	secret := facts.IsSecretPath(s.Path) || facts.IsSecretPath(p)
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		secret = secret || facts.IsSecretPath(real)
+		p = real
+	}
+	if secret {
 		entry["secret"] = true
 		return entry
 	}

@@ -81,6 +81,20 @@ func TestAttachScriptsNeverCopiesSecrets(t *testing.T) {
 	if f := facts.Derive("Bash", params); !f.SecretAccess {
 		t.Errorf("source .env not judged a secret read: %+v", f)
 	}
+	// A symlink with an innocent name pointing at a secret is not copied.
+	if err := os.Symlink(filepath.Join(dir, ".env"), filepath.Join(dir, "notes.sh")); err == nil {
+		params := AttachScripts(map[string]any{"command": "bash notes.sh"}, "Bash", dir)
+		for _, e := range params[facts.ScriptsKey].([]any) {
+			if c, ok := e.(map[string]any)["content"].(string); ok && strings.Contains(c, "sk-live") {
+				t.Fatalf("secret behind a symlink attached: %v", e)
+			}
+		}
+		if f := facts.Derive("Bash", params); !f.SecretAccess {
+			t.Errorf("symlink to .env not judged a secret read: %+v", f)
+		}
+	} else {
+		t.Logf("symlinks unavailable here (%v); symlink case not exercised", err)
+	}
 	// An option the analyzer does not model before the script: opaque.
 	write(t, dir, "x.sh", "echo hi\n")
 	if f := facts.Derive("Bash", AttachScripts(map[string]any{"command": "bash --frobnicate evil.sh x.sh"}, "Bash", dir)); !f.Opaque {
