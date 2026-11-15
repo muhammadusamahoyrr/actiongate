@@ -182,6 +182,10 @@ func Run(ctx context.Context, cfg Config) error {
 	workerClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
 		Workers: workers,
+		// River's periodic REINDEX needs table ownership, which the
+		// least-privilege app role deliberately lacks (internal/dbroles).
+		// An empty list disables it; the queue tables stay small.
+		ReindexerIndexNames: []string{},
 	})
 	if err != nil {
 		return fmt.Errorf("river client: %w", err)

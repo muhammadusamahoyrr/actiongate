@@ -15,8 +15,10 @@
 //     streams across every tenant; it can read past RLS but, not being
 //     superuser or owner, still cannot disable the triggers.
 //
-// The River queue tables (river_*) carry no tenant data and no RLS; AppRole
-// owns them because River's maintenance (index rebuilds) needs ownership.
+// Neither role owns anything (an owner can attach triggers that a later
+// superuser migration would run). River's index-rebuild maintenance, which
+// needs ownership, is switched off in the control plane
+// (ReindexerIndexNames: []string{}).
 package dbroles
 
 import (
@@ -87,51 +89,106 @@ func Ensure(ctx context.Context, owner *pgxpool.Pool, appPassword, sealerPasswor
 		}
 	}
 
-	both := pgx.Identifier{AppRole}.Sanitize() + ", " + pgx.Identifier{SealerRole}.Sanitize()
+	app := pgx.Identifier{AppRole}.Sanitize()
+	sealer := pgx.Identifier{SealerRole}.Sanitize()
+	both := app + ", " + sealer
+	db := pgx.Identifier{currentDB(ctx, tx)}.Sanitize()
+
+	// Neither role owns anything: an owner can attach triggers that would
+	// run as the superuser during a later migration. Ownership granted by
+	// an earlier version is handed back to the migrating owner.
+	if err := reclaimOwnership(ctx, tx); err != nil {
+		return err
+	}
+
 	grants := []string{
-		`GRANT CONNECT ON DATABASE ` + pgx.Identifier{currentDB(ctx, tx)}.Sanitize() + ` TO ` + both,
+		// Nobody but the owner may create objects in the schema the
+		// superuser's migrations resolve names in (search_path hijack).
+		`REVOKE CREATE ON SCHEMA public FROM PUBLIC`,
+		`GRANT CONNECT ON DATABASE ` + db + ` TO ` + both,
 		`GRANT USAGE ON SCHEMA public TO ` + both,
-		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + both,
-		`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ` + both,
-		`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO ` + both,
-		// Tables the owner creates later (new migrations) are covered too.
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ` + both,
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ` + both,
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO ` + both,
+
+		// Start from nothing each run so the grants converge, including
+		// revoking default privileges an earlier version set.
+		`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ` + both,
+		`REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM ` + both,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM ` + both,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM ` + both,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM ` + both,
+
+		// App role: DML on the application and queue tables. Ensure runs
+		// after every migration, so new tables are covered without
+		// default privileges (which would also cover future admin tables).
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + app,
+		`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ` + app,
+		`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO ` + app,
+
+		// Sealer: exactly what sealing does — read the audit tables, set the
+		// four seal columns on events, insert epochs.
+		`GRANT SELECT ON audit_events, audit_epochs TO ` + sealer,
+		`GRANT UPDATE (sequence_number, previous_hash, event_hash, epoch_id) ON audit_events TO ` + sealer,
+		`GRANT INSERT ON audit_epochs TO ` + sealer,
 	}
 	for _, g := range grants {
 		if _, err := tx.Exec(ctx, g); err != nil {
 			return fmt.Errorf("dbroles: %s: %w", g, err)
 		}
 	}
+	// Migration bookkeeping is read-only to the app (the health check reads
+	// the schema version; nothing in the request path may change it).
+	for _, t := range adminTables {
+		var exists bool
+		if err := tx.QueryRow(ctx, `select to_regclass($1) is not null`, "public."+t).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		id := pgx.Identifier{t}.Sanitize()
+		if _, err := tx.Exec(ctx, `REVOKE ALL ON `+id+` FROM `+both); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `GRANT SELECT ON `+id+` TO `+app); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
 
-	// River's queue tables: owned by the app role (its maintenance rebuilds
-	// indexes, which needs ownership). They hold no tenant data and no RLS.
+// adminTables are migration bookkeeping, not application data.
+var adminTables = []string{"goose_db_version", "actiongate_meta", "river_migration"}
+
+// reclaimOwnership hands any table or sequence owned by one of the roles
+// back to the current (owning, migrating) user.
+func reclaimOwnership(ctx context.Context, tx pgx.Tx) error {
 	rows, err := tx.Query(ctx,
-		`select tablename from pg_tables
-		  where schemaname = 'public' and tablename like 'river\_%' and tableowner <> $1`, AppRole)
+		`select c.relname from pg_class c
+		   join pg_namespace n on n.oid = c.relnamespace
+		   join pg_roles r on r.oid = c.relowner
+		  where n.nspname = 'public' and c.relkind in ('r', 'p', 'S') and r.rolname = any($1)`,
+		[]string{AppRole, SealerRole})
 	if err != nil {
 		return err
 	}
-	var riverTables []string
+	var owned []string
 	for rows.Next() {
 		var t string
 		if err := rows.Scan(&t); err != nil {
 			rows.Close()
 			return err
 		}
-		riverTables = append(riverTables, t)
+		owned = append(owned, t)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, t := range riverTables {
-		if _, err := tx.Exec(ctx, `ALTER TABLE `+pgx.Identifier{t}.Sanitize()+` OWNER TO `+pgx.Identifier{AppRole}.Sanitize()); err != nil {
-			return fmt.Errorf("dbroles: own %s: %w", t, err)
+	for _, t := range owned {
+		if _, err := tx.Exec(ctx, `ALTER TABLE `+pgx.Identifier{t}.Sanitize()+` OWNER TO CURRENT_USER`); err != nil {
+			return fmt.Errorf("dbroles: reclaim %s: %w", t, err)
 		}
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func currentDB(ctx context.Context, tx pgx.Tx) string {

@@ -98,8 +98,9 @@ func Setup(t *testing.T) *Stack {
 		t.Fatalf("register authorize worker: %v", err)
 	}
 	workerClient, err := river.NewClient(riverpgxv5.New(app), &river.Config{
-		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},
-		Workers: workers,
+		Queues:              map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},
+		Workers:             workers,
+		ReindexerIndexNames: []string{}, // as in production: needs ownership
 	})
 	if err != nil {
 		t.Fatalf("worker client: %v", err)

@@ -75,15 +75,23 @@ func TestRolesEnforceRLSAndAppendOnly(t *testing.T) {
 	}
 
 	// RLS binds the app role: no tenant set → no rows; tenant set → its rows.
-	if n := count(t, app, `select count(*) from configuration_snapshots`, ""); n != 0 {
-		t.Errorf("app role saw %d snapshots with no tenant set, want 0", n)
+	if !seesNothing(app, `select count(*) from configuration_snapshots`) {
+		t.Error("app role saw snapshots with no tenant set")
 	}
 	if n := count(t, app, `select count(*) from configuration_snapshots`, tenant.String()); n == 0 {
 		t.Error("app role saw no snapshots for its own tenant")
 	}
-	// The sealer must see across tenants.
-	if n := count(t, sealer, `select count(*) from configuration_snapshots`, ""); n == 0 {
-		t.Error("sealer role saw no rows across tenants")
+	// The sealer must see audit events across tenants (BYPASSRLS).
+	if _, err := owner.Exec(ctx,
+		`insert into audit_events (id, tenant_id, stream_id, event_type, attested_by, metadata, recorded_at)
+		 values (gen_random_uuid(), $1, gen_random_uuid(), 'ActionCreated', 'control_plane', '{}', now())`, tenant); err != nil {
+		t.Fatalf("seed audit event: %v", err)
+	}
+	if n := count(t, sealer, `select count(*) from audit_events`, ""); n == 0 {
+		t.Error("sealer role saw no audit events across tenants")
+	}
+	if !seesNothing(app, `select count(*) from audit_events`) {
+		t.Error("app role saw audit events with no tenant set")
 	}
 
 	// Append-only holds for the app role even inside its own tenant.
@@ -98,14 +106,46 @@ func TestRolesEnforceRLSAndAppendOnly(t *testing.T) {
 		t.Error("app role rewrote an append-only snapshot")
 	}
 
-	// River's tables belong to the app role (maintenance needs ownership).
-	var owners string
-	if err := owner.QueryRow(ctx,
-		`select string_agg(distinct tableowner, ',') from pg_tables where tablename like 'river\_%'`).Scan(&owners); err != nil {
+	// Neither role owns anything: an owner could attach triggers that a
+	// later superuser migration would run. Ownership handed out by hand is
+	// reclaimed at the next Ensure.
+	if _, err := owner.Exec(ctx, `alter table river_job owner to ag_app`); err != nil {
 		t.Fatal(err)
 	}
-	if owners != dbroles.AppRole {
-		t.Errorf("river tables owned by %q, want %s", owners, dbroles.AppRole)
+	if err := dbroles.Ensure(ctx, owner, "pw-app", "pw-sealer"); err != nil {
+		t.Fatal(err)
+	}
+	var owned int
+	if err := owner.QueryRow(ctx,
+		`select count(*) from pg_tables where schemaname = 'public' and tableowner in ('ag_app', 'ag_sealer')`).Scan(&owned); err != nil {
+		t.Fatal(err)
+	}
+	if owned != 0 {
+		t.Errorf("%d tables owned by a least-privilege role, want 0", owned)
+	}
+
+	// Migration bookkeeping is read-only to the app.
+	if n := count(t, app, `select count(*) from goose_db_version`, ""); n == 0 {
+		t.Error("app role cannot read the schema version (health check needs it)")
+	}
+	if _, err := app.Exec(ctx, `delete from goose_db_version`); err == nil {
+		t.Error("app role deleted migration history")
+	}
+
+	// The sealer can do exactly its job: read the audit tables and set the
+	// seal columns. Nothing else.
+	for _, q := range []string{
+		`select count(*) from configuration_snapshots`,
+		`select count(*) from action_requests`,
+		`update audit_events set metadata = '{}'::jsonb`,
+		`insert into configuration_snapshots (tenant_id, version, content, content_hash, created_by) values (gen_random_uuid(), 99, '{}', '\x00', 'x')`,
+	} {
+		if _, err := sealer.Exec(ctx, q); err == nil {
+			t.Errorf("sealer role was allowed: %s", q)
+		}
+	}
+	if n := count(t, sealer, `select count(*) from audit_events`, ""); n < 0 {
+		t.Error("sealer cannot read audit_events")
 	}
 
 	// A role someone promoted by hand is demoted again at the next Ensure.
@@ -198,6 +238,18 @@ func migrate(t *testing.T, dsn string) {
 	if err := goose.UpContext(context.Background(), db, "."); err != nil {
 		t.Fatalf("goose up: %v", err)
 	}
+}
+
+// seesNothing reports whether a count query with no tenant set returns 0
+// rows or fails. Both mean RLS held: on a pooled connection that earlier
+// set a tenant, app.tenant_id reads back as ” and the policy's cast
+// errors instead of returning nothing — closed either way.
+func seesNothing(p *pgxpool.Pool, q string) bool {
+	var n int
+	if err := p.QueryRow(context.Background(), q).Scan(&n); err != nil {
+		return true
+	}
+	return n == 0
 }
 
 func count(t *testing.T, p *pgxpool.Pool, q, tenant string) int {
