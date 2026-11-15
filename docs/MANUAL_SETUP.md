@@ -54,12 +54,22 @@ least-privilege roles, the way `actiongate up` does automatically:
 -- as the superuser, after migrations and one control-plane start (River's tables)
 CREATE ROLE ag_app    LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '...';
 CREATE ROLE ag_sealer LOGIN NOSUPERUSER BYPASSRLS   PASSWORD '...';
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO ag_app, ag_sealer;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ag_app, ag_sealer;
-GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ag_app, ag_sealer;
--- River's queue tables (no tenant data) belong to the app role:
--- ALTER TABLE river_job OWNER TO ag_app; (and every other river_* table)
+-- app: DML on everything (re-run after each migration), schema version read-only
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ag_app;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ag_app;
+REVOKE ALL ON goose_db_version, river_migration FROM ag_app;
+GRANT SELECT ON goose_db_version, river_migration TO ag_app;
+-- sealer: only what sealing does
+GRANT SELECT ON audit_events, audit_epochs TO ag_sealer;
+GRANT UPDATE (sequence_number, previous_hash, event_hash, epoch_id) ON audit_events TO ag_sealer;
+GRANT INSERT ON audit_epochs TO ag_sealer;
 ```
+
+Neither role may own any table: an owner can attach triggers that a later
+superuser migration would run. (The control plane turns off River's
+periodic REINDEX, the one thing that would need ownership.)
 
 then set `AG_DATABASE_URL` to `ag_app`, `AG_SEALER_DATABASE_URL` to
 `ag_sealer`, and keep the superuser for migrations (`internal/dbroles` does
