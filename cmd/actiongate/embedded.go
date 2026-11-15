@@ -17,10 +17,28 @@ import (
 // not stop it. The port and password persist in dev.json so every start reuses
 // the same identity.
 func startManagedDB(ctx context.Context, cfg *devConfig, cfgPath string) (*dbruntime.Embedded, error) {
-	// The port and password are decided under the dev.json lock, against
-	// the freshest file: two first starts at once (`up` racing the service)
-	// must not each invent a password and leave the cluster initialised
-	// with one while dev.json holds the other.
+	rt, err := newManagedDB(cfg, cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	// Already up (another `actiongate up`, or the background task)? Reuse it.
+	if pingOnce(ctx, cfg.DatabaseURL) == nil {
+		return nil, nil
+	}
+	if err := rt.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start embedded postgres: %w", err)
+	}
+	return rt, nil
+}
+
+// newManagedDB builds the runtime for the managed cluster and persists its
+// port, password and DSN in dev.json, without starting it.
+//
+// The port and password are decided under the dev.json lock, against the
+// freshest file: two first starts at once (`up` racing the background
+// task) must not each invent a password and leave the cluster initialised
+// with one while dev.json holds the other.
+func newManagedDB(cfg *devConfig, cfgPath string) (*dbruntime.Embedded, error) {
 	dataDir := filepath.Join(filepath.Dir(cfgPath), "pgdata")
 	var rt *dbruntime.Embedded
 	err := updateDevConfig(cfgPath, cfg, func(c *devConfig) (bool, error) {
@@ -59,14 +77,6 @@ func startManagedDB(ctx context.Context, cfg *devConfig, cfgPath string) (*dbrun
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	// Already up (another `actiongate up`, or the service)? Reuse it.
-	if pingOnce(ctx, cfg.DatabaseURL) == nil {
-		return nil, nil
-	}
-	if err := rt.Start(ctx); err != nil {
-		return nil, fmt.Errorf("start embedded postgres: %w", err)
 	}
 	return rt, nil
 }

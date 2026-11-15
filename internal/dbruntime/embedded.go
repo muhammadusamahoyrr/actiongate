@@ -126,6 +126,16 @@ func (e *Embedded) DSN() string { return e.dsn }
 // Port returns the TCP port the cluster listens on (resolved if it was probed).
 func (e *Embedded) Port() uint32 { return e.cfg.Port }
 
+// Adopt takes ownership of a cluster at DataPath that another process
+// started (one that crashed without stopping it), so Stop shuts it down.
+// The caller must know that the cluster is running and that nothing else
+// still owns it.
+func (e *Embedded) Adopt() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.running = true
+}
+
 // Start ensures binaries, initializes a fresh cluster (with builtin C.UTF-8
 // locale and scram auth) only when DataPath holds none, boots via pg_ctl,
 // hardens local auth, and refuses to run if durability GUCs are unsafe. An
