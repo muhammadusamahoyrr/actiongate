@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -192,31 +194,82 @@ func ensurePolicyPack(ctx context.Context, packName string, packJSON []byte) err
 // installHook merges the PreToolUse entry into the project's
 // .claude/settings.local.json, preserving everything else in the file.
 // Re-running replaces any previous actiongate entry (idempotent).
+//
+// Claude Code writes this file too (e.g. when the user picks "always
+// allow"), and an advisory lock cannot coordinate with it. So the merge is
+// optimistic: just before writing, the file is read again, and if it
+// changed since the merge started, the merge is redone on the new content.
+// That shrinks the lost-update window from the whole merge to the instant
+// between the final read and the rename.
 func installHook(projectDir, command, matcher string) (string, error) {
 	settingsDir := filepath.Join(projectDir, ".claude")
 	settingsPath := filepath.Join(settingsDir, "settings.local.json")
 
-	settings := map[string]any{}
-	raw, err := os.ReadFile(filepath.Clean(settingsPath))
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(raw, &settings); err != nil {
-			return "", fmt.Errorf("%s exists but is not valid JSON — fix or remove it: %w", settingsPath, err)
-		}
-		backup := settingsPath + ".bak-actiongate"
-		if _, err := os.Stat(backup); os.IsNotExist(err) {
-			// #nosec G703 -- the project directory is the user's explicit
-			// argument; writing the settings backup inside it is the feature.
-			if err := os.WriteFile(backup, raw, 0o600); err != nil {
-				return "", fmt.Errorf("backup: %w", err)
+	const attempts = 5
+	for range attempts {
+		raw, err := os.ReadFile(filepath.Clean(settingsPath))
+		exists := err == nil
+		switch {
+		case exists:
+			if err := backupSettings(settingsPath, raw); err != nil {
+				return "", err
 			}
-		}
-	case os.IsNotExist(err):
-		if err := os.MkdirAll(settingsDir, 0o750); err != nil {
+		case os.IsNotExist(err):
+			if err := os.MkdirAll(settingsDir, 0o750); err != nil {
+				return "", err
+			}
+		default:
 			return "", err
 		}
-	default:
-		return "", err
+
+		out, err := mergeHookSettings(settingsPath, raw, exists, command, matcher)
+		if err != nil {
+			return "", err
+		}
+
+		again, err := os.ReadFile(filepath.Clean(settingsPath))
+		if exists != (err == nil) || (err != nil && !os.IsNotExist(err)) || !bytes.Equal(raw, again) {
+			continue // someone else wrote the file meanwhile: merge again
+		}
+		// The settings file is the user's: keep its mode and, if it is a
+		// symlink (dotfiles repos), write through the link instead of
+		// replacing it.
+		return settingsPath, fsutil.UpdateFileAtomic(settingsPath, out, 0o600)
+	}
+	return "", fmt.Errorf("%s kept changing while actiongate was updating it (is Claude Code writing it?) — retry", settingsPath)
+}
+
+// backupSettings keeps the user's original settings once, the first time
+// actiongate touches them. O_EXCL makes "only if no backup yet" atomic, and
+// a failed write removes the partial backup so the next run retries.
+func backupSettings(settingsPath string, raw []byte) error {
+	backup := settingsPath + ".bak-actiongate"
+	// #nosec G304 G703 -- the project directory is the user's explicit
+	// argument; writing the settings backup inside it is the feature.
+	f, err := os.OpenFile(filepath.Clean(backup), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	_, werr := f.Write(raw)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(backup)
+		return fmt.Errorf("backup: %w", errors.Join(werr, cerr))
+	}
+	return nil
+}
+
+// mergeHookSettings returns raw (the current settings, if exists) with
+// actiongate's hook entries replaced, as the bytes to write.
+func mergeHookSettings(settingsPath string, raw []byte, exists bool, command, matcher string) ([]byte, error) {
+	settings := map[string]any{}
+	if exists {
+		if err := json.Unmarshal(raw, &settings); err != nil {
+			return nil, fmt.Errorf("%s exists but is not valid JSON — fix or remove it: %w", settingsPath, err)
+		}
 	}
 
 	hooks, ok := settings["hooks"].(map[string]any)
@@ -262,12 +315,9 @@ func installHook(projectDir, command, matcher string) (string, error) {
 
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	// The settings file is the user's: keep its mode and, if it is a
-	// symlink (dotfiles repos), write through the link instead of
-	// replacing it.
-	return settingsPath, fsutil.UpdateFileAtomic(settingsPath, append(out, '\n'), 0o600)
+	return append(out, '\n'), nil
 }
 
 func hookEntryIsOurs(entry any) bool {

@@ -123,22 +123,8 @@ func (s *State) SaveReceipts(path string) error {
 }
 
 // withStateLock runs fn while holding an exclusive lock on path+".lock".
-// The lock lives in a separate file because the state file itself is
-// replaced by rename on every save.
 func withStateLock(path string, fn func() error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("state dir: %w", err)
-	}
-	lf, err := os.OpenFile(filepath.Clean(path+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return fmt.Errorf("open state lock: %w", err)
-	}
-	defer func() { _ = lf.Close() }()
-	if err := lockFile(lf); err != nil {
-		return fmt.Errorf("lock state: %w", err)
-	}
-	defer func() { _ = unlockFile(lf) }()
-	return fn()
+	return fsutil.WithLock(path, fn)
 }
 
 // readState and writeState assume the caller holds the state lock.
