@@ -104,7 +104,9 @@ var runners = map[string]runnerOpts{
 		longNoValue: set("--norc", "--noprofile", "--login", "--posix", "--verbose", "--noediting", "--restricted", "--debugger", "--help", "--version"),
 		longValue:   set("--rcfile", "--init-file"),
 		inline:      set("-c", "-s"),
-		unsure:      set("--rcfile", "--init-file"),
+		// -i/-l/--login source ~/.bashrc / profile files, which the agent
+		// can write; --rcfile/--init-file name one.
+		unsure: set("--rcfile", "--init-file", "-i", "-l", "--login"),
 	},
 	"python": {
 		noValue: "bBdEhiIOPqsSuvVxR", value: "WXQ",
@@ -116,13 +118,15 @@ var runners = map[string]runnerOpts{
 		longNoValue: set("--no-warnings", "--trace-warnings", "--enable-source-maps", "--inspect", "--inspect-brk",
 			"--watch", "--test", "--expose-gc", "--no-deprecation", "--trace-deprecation", "--preserve-symlinks",
 			"--abort-on-uncaught-exception", "--trace-uncaught", "--help", "--version"),
-		longValue: set("--require", "--import", "--loader", "--experimental-loader", "--env-file", "--max-old-space-size"),
+		longValue: set("--require", "--import", "--loader", "--experimental-loader", "--env-file", "--env-file-if-exists", "--max-old-space-size"),
 		inline:    set("-e", "-p", "--eval", "--print", "-"),
-		unsure:    set("-r", "--require", "--import", "--loader", "--experimental-loader"),
+		// --env-file can set NODE_OPTIONS, which loads code.
+		unsure: set("-r", "--require", "--import", "--loader", "--experimental-loader", "--env-file", "--env-file-if-exists"),
 	},
-	"perl":  {noValue: "wWXtTcnpasluU0", value: "IMm", inline: set("-e", "-E", "-"), unsure: set("-M", "-m")},
-	"ruby":  {noValue: "wWvcdynpalhs", value: "IrEC", inline: set("-e", "-"), unsure: set("-r", "-C")},
-	"php":   {noValue: "hvqsnailw", value: "dcz", inline: set("-r", "-"), unsure: set("-z")},
+	"perl": {noValue: "wWXtTcnpasluU0", value: "IMm", inline: set("-e", "-E", "-"), unsure: set("-M", "-m", "-I")},
+	"ruby": {noValue: "wWvcdynpalhs", value: "IrEC", inline: set("-e", "-"), unsure: set("-r", "-C", "-I")},
+	// -d auto_prepend_file=..., -c custom php.ini: both can load code.
+	"php":   {noValue: "hvqsnailw", value: "dcz", inline: set("-r", "-"), unsure: set("-z", "-d", "-c")},
 	"deno":  {inline: set("--eval", "-")},
 	"bun":   {inline: set("-e", "--eval", "-")},
 	"other": {inline: set("-c", "-e", "-")},

@@ -43,6 +43,11 @@ func TestScriptsRun(t *testing.T) {
 		{"Bash", "ruby -C /tmp x.rb", []Script{{Path: "x.rb", Via: "ruby", Uncertain: true}}},
 		{"Bash", "perl -MEvil x.pl", []Script{{Path: "x.pl", Via: "perl", Uncertain: true}}},
 		{"Bash", "bash --rcfile evil.sh x.sh", []Script{{Path: "x.sh", Via: "shell", Uncertain: true}}},
+		{"Bash", "bash -l x.sh", []Script{{Path: "x.sh", Via: "shell", Uncertain: true}}},
+		{"Bash", "php -d auto_prepend_file=evil.php x.php", []Script{{Path: "x.php", Via: "php", Uncertain: true}}},
+		{"Bash", "node --env-file=.env.local app.js", []Script{{Path: "app.js", Via: "node", Uncertain: true}}},
+		{"Bash", "perl -I ./lib x.pl", []Script{{Path: "x.pl", Via: "perl", Uncertain: true}}},
+		{"Bash", "bash -x x.sh", []Script{{Path: "x.sh", Via: "shell"}}}, // harmless switch stays certain
 
 		// Inline shell code that runs a script is followed.
 		{"Bash", `bash -c "bash cleanup.sh"`, []Script{{Path: "cleanup.sh", Via: "shell"}}},
@@ -118,6 +123,9 @@ func TestDeriveJudgesAttachedScripts(t *testing.T) {
 		{"exec: harmless shebang switches are fine", withScript("./x",
 			map[string]any{"path": "./x", "via": "exec", "content": "#!/bin/bash -eu\nrm -rf ~\n"}),
 			func(f Facts) bool { return f.Destructive && !f.Opaque }},
+		{"exec: login-shell shebang is opaque (sources profile files)", withScript("./x",
+			map[string]any{"path": "./x", "via": "exec", "content": "#!/bin/bash -l\necho hi\n"}),
+			func(f Facts) bool { return f.Opaque }},
 		{"exec: shebang with inline code is opaque", withScript("./x",
 			map[string]any{"path": "./x", "via": "exec", "content": "#!/bin/sh -c 'rm -rf ~'\necho hi\n"}),
 			func(f Facts) bool { return f.Opaque }},
