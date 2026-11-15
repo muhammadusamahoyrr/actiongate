@@ -2,7 +2,7 @@ module github.com/muhammadusamahoyrr/actiongate
 
 go 1.25.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	connectrpc.com/connect v1.20.0
