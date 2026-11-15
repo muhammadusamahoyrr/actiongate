@@ -95,7 +95,7 @@ func psStatement(stmt string, depth int) Facts {
 		}
 		for _, a := range cands {
 			if IsSecretPath(a) || isSecretDir(a) && psCopy[name] || strings.ContainsAny(a, "*?") && globMatchesSecret(a) {
-				f.secret(name + " reads secret file " + a)
+				f.secretPath(a, name+" reads secret file "+a)
 				break
 			}
 		}

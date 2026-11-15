@@ -128,7 +128,7 @@ func (a *shellAnalyzer) visit(node syntax.Node) bool {
 		for _, r := range n.Redirs {
 			if r.Op == syntax.RdrIn || r.Op == syntax.RdrInOut {
 				if t := a.approx(r.Word); IsSecretPath(t) {
-					a.f.secret("redirects a secret file into a command")
+					a.f.secretPath(t, "redirects a secret file into a command")
 				}
 			}
 			switch r.Op {
@@ -442,7 +442,7 @@ func (a *shellAnalyzer) secretArgs(name string, rest []arg) {
 		}
 		for _, c := range pathCandidates(x.text) {
 			if IsSecretPath(c) || isSecretDir(c) || strings.ContainsAny(c, "*?[") && globMatchesSecret(strings.ReplaceAll(c, `\`, "")) {
-				a.f.secret(name + " reads secret file " + c)
+				a.f.secretPath(c, name+" reads secret file "+c)
 				return
 			}
 		}
@@ -504,7 +504,7 @@ func inspectCode(code string, depth int, o Options) Facts {
 	}
 	for _, s := range stringLiterals(code) {
 		if IsSecretPath(s) {
-			f.secret("inline code opens secret file " + s)
+			f.secretPath(s, "inline code opens secret file "+s)
 		}
 		if IsControlPath(s) {
 			f.selfTamper("inline code names actiongate control file " + s)
@@ -516,6 +516,10 @@ func inspectCode(code string, depth int, o Options) Facts {
 			}
 			if inner.SecretAccess {
 				f.secret("inline code runs a shell command that reads secrets")
+			}
+			if inner.SelfSecret {
+				f.SelfSecret = true
+				f.add("inline code runs a shell command that reads actiongate's own secrets")
 			}
 			if inner.SelfTamper {
 				f.selfTamper("inline code runs a shell command that modifies actiongate control files")

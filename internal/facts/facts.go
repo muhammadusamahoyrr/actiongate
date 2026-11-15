@@ -84,6 +84,17 @@ func (f *Facts) secret(reason string) {
 	f.add(reason)
 }
 
+// secretPath is secret for a detector that resolved the path it flagged:
+// when that path is actiongate's own, it also sets SelfSecret — decided on
+// the analyzer's resolved path, never by re-reading the raw text.
+func (f *Facts) secretPath(p, reason string) {
+	f.secret(reason)
+	if IsActiongateSecretPath(p) {
+		f.SelfSecret = true
+		f.add("reads actiongate's own secrets (its config directory)")
+	}
+}
+
 func (f *Facts) opaque(reason string) {
 	f.Opaque = true
 	f.add(reason)
@@ -168,18 +179,18 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 			p = str("notebook_path")
 		}
 		if IsSecretPath(p) {
-			f.secret("file tool on secret path " + path.Base(slash(p)))
+			f.secretPath(p, "file tool on secret path "+path.Base(slash(p)))
 		}
 		if tool != "Read" && IsControlPath(p) {
 			f.selfTamper(tool + " on actiongate control file " + path.Base(slash(p)))
 		}
 	case "read_file":
 		if p := str("path"); IsSecretPath(p) {
-			f.secret("file tool on secret path " + path.Base(slash(p)))
+			f.secretPath(p, "file tool on secret path "+path.Base(slash(p)))
 		}
 	case "Grep":
 		if p := str("path"); IsSecretPath(p) {
-			f.secret("grep inside secret path " + path.Base(slash(p)))
+			f.secretPath(p, "grep inside secret path "+path.Base(slash(p)))
 		}
 		if g := str("glob"); g != "" && globMatchesSecret(g) {
 			f.secret("grep glob covers secret files: " + g)
@@ -195,12 +206,12 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 		}
 		// ...and may read any path it is given.
 		if p, ok := findString(params, 0, IsActiongateSecretPath); ok {
-			f.secret(tool + " on actiongate secret path " + path.Base(slash(p)))
+			f.secretPath(p, tool+" on actiongate secret path "+path.Base(slash(p)))
 		}
 	}
-	// A secret access that names actiongate's own config directory is
-	// self_secret. The secret detectors above already decided it READS the
-	// path (cat, cp source, Read, Grep, ...); a plain `ls` sets nothing.
+	// The detectors set SelfSecret from the path they resolved. As a
+	// second, fail-closed net: a secret access whose raw text also names
+	// actiongate's config directory counts too (it can only add a deny).
 	if f.SecretAccess && mentionsActiongateSecret(params) {
 		f.SelfSecret = true
 		f.add("reads actiongate's own secrets (its config directory)")

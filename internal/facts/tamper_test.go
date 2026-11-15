@@ -33,6 +33,10 @@ func TestIsActiongateSecretPath(t *testing.T) {
 		"$APPDATA/actiongate/dev.json":                             true,
 		`$env:APPDATA\actiongate\gateway.json`:                     true,
 		"/anything/actiongate/dev.json":                            true, // parent may be unresolvable
+		"/home/x/.config/x/../actiongate/pgdata/f":                 true, // .. resolved
+		`C:\Users\x\AppData\Roaming\ACTION~1\dev.json`:             true, // 8.3 short name
+		`C:\Users\x\APPDAT~1\Roaming\actiongate\gateway.json`:      true,
+		`C:\Users\x\AppData\Roaming\ACTION~2\DEVJSO~1.JSO`:         true,
 		"/home/x/src/actiongate/README.md":                         false,
 		"/home/x/src/actiongate/internal/facts/facts.go":           false,
 		"/home/x/app/dev.json":                                     false,
@@ -48,8 +52,16 @@ func TestSelfSecretNeedsARead(t *testing.T) {
 	if f := Derive("Bash", map[string]any{"command": "ls ~/.config/actiongate"}); f.SelfSecret {
 		t.Errorf("listing the directory is not a read: %v", f.Reasons)
 	}
-	if f := Derive("Bash", map[string]any{"command": "cat ~/.config/actiongate/dev.json"}); !f.SelfSecret || !f.SecretAccess {
-		t.Errorf("cat dev.json: self_secret=%v secret=%v", f.SelfSecret, f.SecretAccess)
+	for _, cmd := range []string{
+		"cat ~/.config/actiongate/dev.json",
+		`cat ~/.config/action"gate"/dev.json`, // quoting the raw-text split would miss
+		`cat ~/.config/'actiongate'/gateway.json`,
+		`bash -c "cat ~/.config/actiongate/dev.json"`,
+		`python3 -c "print(open('/home/x/.config/actiongate/dev.json').read())"`,
+	} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); !f.SelfSecret || !f.SecretAccess {
+			t.Errorf("%s: self_secret=%v secret=%v (%v)", cmd, f.SelfSecret, f.SecretAccess, f.Reasons)
+		}
 	}
 }
 

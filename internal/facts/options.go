@@ -179,7 +179,7 @@ func (a *shellAnalyzer) mentionedSecret(name string, rest []arg) {
 	for _, x := range rest {
 		for _, c := range pathCandidates(x.text) {
 			if IsSecretPath(c) || isSecretDir(c) || strings.ContainsAny(c, "*?[") && globMatchesSecret(strings.ReplaceAll(c, `\`, "")) {
-				a.f.secret(name + " mentions secret file " + c)
+				a.f.secretPath(c, name+" mentions secret file "+c)
 				return
 			}
 		}

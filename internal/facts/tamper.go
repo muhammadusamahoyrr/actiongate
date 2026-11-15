@@ -45,8 +45,9 @@ func IsControlPath(p string) bool {
 	return matchName(base, "dev.json") && matchName(parent, "actiongate")
 }
 
-// matchName reports whether one path component is, or as a glob could
-// expand to, one of names.
+// matchName reports whether one path component is, or could stand for, one
+// of names: as a glob that could expand to it, or as a Windows 8.3 short
+// name that could alias it (ACTION~1 for actiongate, SETTIN~1.JSO).
 func matchName(component string, names ...string) bool {
 	glob := strings.ContainsAny(component, "*?[")
 	for _, n := range names {
@@ -56,8 +57,35 @@ func matchName(component string, names ...string) bool {
 		if ok, _ := path.Match(component, n); glob && ok {
 			return true
 		}
+		if shortNameMatch(component, n) {
+			return true
+		}
 	}
 	return false
+}
+
+// shortNameMatch reports whether component is an 8.3 short name that could
+// belong to name: up to six leading characters of the name's stem, ~N, and
+// optionally up to three leading characters of its extension. Which ~N a
+// file gets is not knowable statically, so any N matches (fail closed).
+func shortNameMatch(component, name string) bool {
+	stem, ext, _ := strings.Cut(component, ".")
+	pre, num, ok := strings.Cut(stem, "~")
+	if !ok || pre == "" || len(pre) > 6 || num == "" || len(ext) > 3 {
+		return false
+	}
+	for _, r := range num {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	// Short names drop dots and spaces from the long stem.
+	nStem, nExt := name, ""
+	if i := strings.LastIndex(name, "."); i > 0 {
+		nStem, nExt = name[:i], name[i+1:]
+	}
+	nStem = strings.NewReplacer(".", "", " ", "").Replace(nStem)
+	return strings.HasPrefix(nStem, pre) && strings.HasPrefix(nExt, ext)
 }
 
 // IsControlDir reports whether a path names a directory that holds control
@@ -122,10 +150,12 @@ func normPath(p string) string {
 		parts[i] = c
 	}
 	p = strings.Join(parts, "/")
-	if len(p) > 1 {
-		p = strings.TrimRight(p, "/")
+	if p == "" {
+		return ""
 	}
-	return p
+	// Resolve . and .. lexically: ~/.config/x/../actiongate/pgdata is the
+	// config dir, whatever the spelling.
+	return path.Clean(p)
 }
 
 func isAbsPath(p string) bool {
