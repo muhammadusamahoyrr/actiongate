@@ -429,7 +429,8 @@ the signed outcome receipt.
 
 | Env var | Required | Purpose |
 |---|---|---|
-| `AG_DATABASE_URL` | yes | Postgres connection string |
+| `AG_DATABASE_URL` | yes | Postgres connection string for the request path. Use a role that is **not** a superuser and does not own the tables, or row-level security and the append-only triggers do not bind it. `actiongate up` provisions `ag_app` for this automatically |
+| `AG_SEALER_DATABASE_URL` | no (= `AG_DATABASE_URL`) | Role for the sealer, which reads across tenants: `NOSUPERUSER BYPASSRLS` (`ag_sealer` under `actiongate up`) |
 | `AG_TOKEN_SECRET` | yes (≥ 32 bytes) | HMAC secret for approval callback tokens |
 | `AG_LISTEN` | no (`127.0.0.1:8091`) | Control plane listen address. Loopback by default: it serves plain HTTP with an unauthenticated enrollment and approval callback. A host-less `:PORT` is narrowed to `127.0.0.1`; to listen on the network name the host (`0.0.0.0:8091`) and put TLS in front |
 | `AG_GRANT_KEY_SEED` / `AG_EPOCH_KEY_SEED` | recommended | Base64 32-byte signing seeds; ephemeral (with a loud warning) if unset |

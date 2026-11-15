@@ -512,7 +512,7 @@ func serveResilient(ctx context.Context, cfgPath string, log *slog.Logger, adopt
 			}
 			rt = r
 		}
-		if err := migrate(ctx, cfg.DatabaseURL); err != nil {
+		if err := prepareDatabase(ctx, cfg, cfgPath); err != nil {
 			wait("migrating", "migrate failed", err)
 			continue
 		}

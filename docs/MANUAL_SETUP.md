@@ -45,6 +45,36 @@ export AG_TOKEN_SECRET="change-me-to-32-plus-random-bytes!!"
 ./bin/controlplane
 ```
 
+This quick start connects as `ag`, the container's superuser, which
+**bypasses row-level security and can disable the append-only triggers**.
+That is fine for a first look; for anything real, run the control plane as
+least-privilege roles, the way `actiongate up` does automatically:
+
+```sql
+-- as the superuser, after migrations and one control-plane start (River's tables)
+CREATE ROLE ag_app    LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '...';
+CREATE ROLE ag_sealer LOGIN NOSUPERUSER BYPASSRLS   PASSWORD '...';
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO ag_app, ag_sealer;
+-- app: DML on everything (re-run after each migration), schema version read-only
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ag_app;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ag_app;
+REVOKE ALL ON goose_db_version, river_migration FROM ag_app;
+GRANT SELECT ON goose_db_version, river_migration TO ag_app;
+-- sealer: only what sealing does
+GRANT SELECT ON audit_events, audit_epochs TO ag_sealer;
+GRANT UPDATE (sequence_number, previous_hash, event_hash, epoch_id) ON audit_events TO ag_sealer;
+GRANT INSERT ON audit_epochs TO ag_sealer;
+```
+
+Neither role may own any table: an owner can attach triggers that a later
+superuser migration would run. (The control plane turns off River's
+periodic REINDEX, the one thing that would need ownership.)
+
+then set `AG_DATABASE_URL` to `ag_app`, `AG_SEALER_DATABASE_URL` to
+`ag_sealer`, and keep the superuser for migrations (`internal/dbroles` does
+exactly this and is what to read for the full list).
+
 It listens on `127.0.0.1:8091` (loopback only; set `AG_LISTEN=0.0.0.0:8091`
 to expose it, behind TLS). On first start it prints generated signing-key seeds —
 save them as `AG_GRANT_KEY_SEED` and `AG_EPOCH_KEY_SEED` so keys survive

@@ -22,14 +22,19 @@ type devConfig struct {
 	DatabaseURL string `json:"database_url"`
 	// DBPort and DBPassword persist the managed embedded PostgreSQL identity so
 	// every start reuses the same port and credentials (see internal/dbruntime).
-	DBPort       int    `json:"db_port,omitempty"`
-	DBPassword   string `json:"db_password,omitempty"`
-	Listen       string `json:"listen"`
-	ServerURL    string `json:"server_url"`
-	TokenSecret  string `json:"token_secret"`
-	GrantKeySeed string `json:"grant_key_seed"` // base64 32 bytes
-	EpochKeySeed string `json:"epoch_key_seed"` // base64 32 bytes
-	TenantID     string `json:"tenant_id,omitempty"`
+	DBPort     int    `json:"db_port,omitempty"`
+	DBPassword string `json:"db_password,omitempty"`
+	// AppDBPassword and SealerDBPassword are the least-privilege roles the
+	// control plane runs as (internal/dbroles); DatabaseURL/DBPassword stay
+	// the owning superuser, used only for migrations and administration.
+	AppDBPassword    string `json:"app_db_password,omitempty"`
+	SealerDBPassword string `json:"sealer_db_password,omitempty"`
+	Listen           string `json:"listen"`
+	ServerURL        string `json:"server_url"`
+	TokenSecret      string `json:"token_secret"`
+	GrantKeySeed     string `json:"grant_key_seed"` // base64 32 bytes
+	EpochKeySeed     string `json:"epoch_key_seed"` // base64 32 bytes
+	TenantID         string `json:"tenant_id,omitempty"`
 
 	// Optional Slack approvals. Set here (not env) so the Windows service —
 	// which never sees your shell environment — picks them up too.
