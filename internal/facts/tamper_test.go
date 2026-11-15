@@ -116,7 +116,10 @@ func TestSelfTamper(t *testing.T) {
 		// ...without flagging ordinary work.
 		{"Bash", map[string]any{"command": "rm -rf ~/src/actiongate/build"}, false}, // a checkout named actiongate
 		{"Bash", map[string]any{"command": "rsync -avt src/ /backup/src/"}, false},
-		{"Bash", map[string]any{"command": "cp -t /tmp .claude/settings.json"}, false}, // copies the control file away: read only
+		{"Bash", map[string]any{"command": "cp -t /tmp .claude/settings.json"}, true}, // read only, but a control file as last operand fails closed
+		{"Bash", map[string]any{"command": "cp -S.tx a .claude/settings.json"}, true}, // -S takes ".tx": not -t x
+		{"Bash", map[string]any{"command": "install -m 644 x .claude/settings.json"}, true},
+		{"Bash", map[string]any{"command": "cp -S .bak notes.md docs/"}, false},
 		{"PowerShell", map[string]any{"command": `Get-Item .claude\settings.json | Set-Content -Path backup.json`}, false},
 		{"mcp__shallow", map[string]any{"a": deepNest(3)}, false},
 		{"Bash", map[string]any{"command": "cp notes.md .claude/commands/"}, false},

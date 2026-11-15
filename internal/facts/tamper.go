@@ -233,6 +233,12 @@ func (a *shellAnalyzer) tamperArgs(name string, rest []arg) {
 			hit("overwrites actiongate control file " + path.Base(slash(dest)))
 			return
 		}
+		// With -t the last operand is a source — unless the option parse
+		// was wrong. A control file there fails closed either way.
+		if len(ops) > 0 && a.cwd.file(ops[len(ops)-1].text) {
+			hit("may overwrite actiongate control file " + path.Base(slash(ops[len(ops)-1].text)))
+			return
+		}
 		// Copying INTO a control directory overwrites the real file when
 		// a source is named like one, or is a tree that may contain one.
 		if a.cwd.target(dest) {
@@ -267,6 +273,9 @@ func (a *shellAnalyzer) tamperArgs(name string, rest []arg) {
 // operand as destination).
 var targetDirCmds = set("cp", "mv", "install", "ln")
 
+// copyValueOpts are the short options that take a value, per command.
+var copyValueOpts = map[string]string{"cp": "S", "mv": "S", "ln": "S", "install": "Sgom", "rsync": "efT", "scp": "cFiJlPoS"}
+
 // copyOperands splits a copy-like command into its operands, an explicit
 // target directory (-t DIR, -tDIR, -rt DIR, --target-directory=DIR, or any
 // unambiguous prefix such as --target DIR) and whether it copies trees.
@@ -295,6 +304,14 @@ func copyOperands(name string, rest []arg) (ops []arg, dest string, recursive bo
 			for j, r := range cluster {
 				if r == 'r' || r == 'R' || r == 'a' {
 					recursive = true
+				}
+				// An option that takes a value ends the cluster: the rest
+				// is its value (cp -S.tx is suffix ".tx", not -t x).
+				if strings.ContainsRune(copyValueOpts[name], r) {
+					if cluster[j+1:] == "" {
+						i++ // value is the next word
+					}
+					break
 				}
 				if r == 't' && takesT {
 					if v := cluster[j+1:]; v != "" {

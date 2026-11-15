@@ -33,17 +33,23 @@ const (
 // to the tenant.
 func cmdProtect(args []string) int {
 	if len(args) < 1 || args[0] != "claude-code" {
-		fmt.Fprintln(os.Stderr, "usage: actiongate protect claude-code [-project DIR]")
+		fmt.Fprintln(os.Stderr, "usage: actiongate protect claude-code [-project DIR] | -managed [-install-dir DIR] [-exclusive]")
 		return 1
 	}
 	fs := flag.NewFlagSet("protect", flag.ContinueOnError)
 	project := fs.String("project", ".", "project directory whose Claude Code settings get the hook")
 	matcher := fs.String("matcher", defaultMatcher, "tool-name matcher for the PreToolUse hook")
 	pack := fs.String("pack", "claude-code", "starter policy pack: "+strings.Join(policies.Names(), "|"))
+	managed := fs.Bool("managed", false, "admin: install the hook machine-wide in Claude Code's managed settings, where the agent cannot remove it")
+	installDir := fs.String("install-dir", defaultInstallDir(), "with -managed: admin-only directory to copy ag-hook and gateway into")
+	exclusive := fs.Bool("exclusive", false, "with -managed: also set allowManagedHooksOnly (blocks every non-managed hook)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 1
 	}
 	ctx := context.Background()
+	if *managed {
+		return protectManaged(*installDir, *matcher, *exclusive)
+	}
 
 	packJSON, ok := policies.Pack(*pack)
 	if !ok {
@@ -84,12 +90,28 @@ func cmdProtect(args []string) int {
 		return 1
 	}
 
+	// With a managed hook in place, a project hook would only run every
+	// check twice (two approval prompts). Remove ours instead of adding it.
+	if cmd, ok := managedHookInstalled(managedSettingsPath()); ok {
+		settingsPath, err := installHook(projectDir, "", *matcher)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "protect: hook:", err)
+			return 1
+		}
+		fmt.Printf("• managed hook already governs every project (%s)\n", cmd)
+		fmt.Printf("• no project hook needed; removed any actiongate entry from %s\n", settingsPath)
+		fmt.Printf("• policy pack %q applied — done\n", *pack)
+		return 0
+	}
+
 	settingsPath, err := installHook(projectDir, bashHookCommand(hookPath), *matcher)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "protect: hook:", err)
 		return 1
 	}
 	fmt.Printf("• hook installed: %s\n", settingsPath)
+	fmt.Println("  (project-level: an agent can edit this file. For a hook it cannot remove, run")
+	fmt.Println("   `actiongate protect claude-code -managed` once as administrator.)")
 
 	if !healthy(ctx, state.ServerURL) {
 		fmt.Printf(`
@@ -201,10 +223,18 @@ func ensurePolicyPack(ctx context.Context, packName string, packJSON []byte) err
 // changed since the merge started, the merge is redone on the new content.
 // That shrinks the lost-update window from the whole merge to the instant
 // between the final read and the rename.
+//
+// An empty command removes actiongate's entries and adds none.
 func installHook(projectDir, command, matcher string) (string, error) {
-	settingsDir := filepath.Join(projectDir, ".claude")
-	settingsPath := filepath.Join(settingsDir, "settings.local.json")
+	settingsPath := filepath.Join(projectDir, ".claude", "settings.local.json")
+	return settingsPath, updateHookFile(settingsPath, command, matcher, 0o600, nil)
+}
 
+// updateHookFile is installHook for any Claude Code settings file: perm is
+// the mode of a newly created file, and set holds extra top-level keys to
+// write (e.g. allowManagedHooksOnly in managed settings).
+func updateHookFile(settingsPath, command, matcher string, perm os.FileMode, set map[string]any) error {
+	settingsDir := filepath.Dir(settingsPath)
 	const attempts = 5
 	for range attempts {
 		raw, err := os.ReadFile(filepath.Clean(settingsPath))
@@ -212,19 +242,22 @@ func installHook(projectDir, command, matcher string) (string, error) {
 		switch {
 		case exists:
 			if err := backupSettings(settingsPath, raw); err != nil {
-				return "", err
+				return err
 			}
 		case os.IsNotExist(err):
-			if err := os.MkdirAll(settingsDir, 0o750); err != nil {
-				return "", err
+			if command == "" && len(set) == 0 {
+				return nil // removing from a file that does not exist
+			}
+			if err := os.MkdirAll(settingsDir, 0o755); err != nil { //nolint:gosec // G301: Claude Code (the user) must read settings dirs
+				return err
 			}
 		default:
-			return "", err
+			return err
 		}
 
-		out, err := mergeHookSettings(settingsPath, raw, exists, command, matcher)
+		out, err := mergeHookSettings(settingsPath, raw, exists, command, matcher, set)
 		if err != nil {
-			return "", err
+			return err
 		}
 
 		again, err := os.ReadFile(filepath.Clean(settingsPath))
@@ -234,9 +267,9 @@ func installHook(projectDir, command, matcher string) (string, error) {
 		// The settings file is the user's: keep its mode and, if it is a
 		// symlink (dotfiles repos), write through the link instead of
 		// replacing it.
-		return settingsPath, fsutil.UpdateFileAtomic(settingsPath, out, 0o600)
+		return fsutil.UpdateFileAtomic(settingsPath, out, perm)
 	}
-	return "", fmt.Errorf("%s kept changing while actiongate was updating it (is Claude Code writing it?) — retry", settingsPath)
+	return fmt.Errorf("%s kept changing while actiongate was updating it (is Claude Code writing it?) — retry", settingsPath)
 }
 
 // backupSettings keeps the user's original settings once, the first time
@@ -264,12 +297,15 @@ func backupSettings(settingsPath string, raw []byte) error {
 
 // mergeHookSettings returns raw (the current settings, if exists) with
 // actiongate's hook entries replaced, as the bytes to write.
-func mergeHookSettings(settingsPath string, raw []byte, exists bool, command, matcher string) ([]byte, error) {
+func mergeHookSettings(settingsPath string, raw []byte, exists bool, command, matcher string, set map[string]any) ([]byte, error) {
 	settings := map[string]any{}
 	if exists {
 		if err := json.Unmarshal(raw, &settings); err != nil {
 			return nil, fmt.Errorf("%s exists but is not valid JSON — fix or remove it: %w", settingsPath, err)
 		}
+	}
+	for k, v := range set {
+		settings[k] = v
 	}
 
 	hooks, ok := settings["hooks"].(map[string]any)
@@ -284,14 +320,16 @@ func mergeHookSettings(settingsPath string, raw []byte, exists bool, command, ma
 			kept = append(kept, entry)
 		}
 	}
-	kept = append(kept, map[string]any{
-		"matcher": matcher,
-		"hooks": []any{map[string]any{
-			"type":    "command",
-			"command": command,
-			"timeout": hookTimeoutSecs,
-		}},
-	})
+	if command != "" { // "" removes actiongate's entries only
+		kept = append(kept, map[string]any{
+			"matcher": matcher,
+			"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": command,
+				"timeout": hookTimeoutSecs,
+			}},
+		})
+	}
 	hooks["PreToolUse"] = kept
 
 	// SessionStart warning: if the control plane is down, say so loudly at
@@ -304,13 +342,15 @@ func mergeHookSettings(settingsPath string, raw []byte, exists bool, command, ma
 			keptStart = append(keptStart, entry)
 		}
 	}
-	keptStart = append(keptStart, map[string]any{
-		"hooks": []any{map[string]any{
-			"type":    "command",
-			"command": command + " -warn",
-			"timeout": 10,
-		}},
-	})
+	if command != "" {
+		keptStart = append(keptStart, map[string]any{
+			"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": command + " -warn",
+				"timeout": 10,
+			}},
+		})
+	}
 	hooks["SessionStart"] = keptStart
 
 	out, err := json.MarshalIndent(settings, "", "  ")
@@ -318,6 +358,31 @@ func mergeHookSettings(settingsPath string, raw []byte, exists bool, command, ma
 		return nil, err
 	}
 	return append(out, '\n'), nil
+}
+
+// ourPreToolUseCommand finds actiongate's PreToolUse hook command in a
+// settings file's JSON.
+func ourPreToolUseCommand(raw []byte) (string, bool) {
+	var settings map[string]any
+	if json.Unmarshal(raw, &settings) != nil {
+		return "", false
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	pre, _ := hooks["PreToolUse"].([]any)
+	for _, entry := range pre {
+		if !hookEntryIsOurs(entry) {
+			continue
+		}
+		inner, _ := entry.(map[string]any)["hooks"].([]any)
+		for _, h := range inner {
+			if hm, ok := h.(map[string]any); ok {
+				if cmd, _ := hm["command"].(string); strings.Contains(cmd, "ag-hook") {
+					return cmd, true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 func hookEntryIsOurs(entry any) bool {
