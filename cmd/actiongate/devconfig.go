@@ -89,7 +89,7 @@ func fillDevDefaults(cfg *devConfig) bool {
 		}
 	}
 	set(&cfg.DatabaseURL, func() string { return "postgres://ag:ag@localhost:5432/actiongate?sslmode=disable" })
-	set(&cfg.Listen, func() string { return ":8091" })
+	set(&cfg.Listen, func() string { return "127.0.0.1:8091" })
 	set(&cfg.ServerURL, func() string { return "http://localhost:8091" })
 	set(&cfg.TokenSecret, func() string { return randomB64(32) })
 	set(&cfg.GrantKeySeed, func() string { return randomB64(32) })

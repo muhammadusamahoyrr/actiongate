@@ -421,7 +421,7 @@ the signed outcome receipt.
 |---|---|---|
 | `AG_DATABASE_URL` | yes | Postgres connection string |
 | `AG_TOKEN_SECRET` | yes (≥ 32 bytes) | HMAC secret for approval callback tokens |
-| `AG_LISTEN` | no (`:8091`) | Control plane listen address |
+| `AG_LISTEN` | no (`127.0.0.1:8091`) | Control plane listen address. Loopback by default: it serves plain HTTP with an unauthenticated enrollment and approval callback. A host-less `:PORT` is narrowed to `127.0.0.1`; to listen on the network name the host (`0.0.0.0:8091`) and put TLS in front |
 | `AG_GRANT_KEY_SEED` / `AG_EPOCH_KEY_SEED` | recommended | Base64 32-byte signing seeds; ephemeral (with a loud warning) if unset |
 | `AG_APPROVER_DEFAULT` | no (`team-lead`) | Default approver target |
 | `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals |

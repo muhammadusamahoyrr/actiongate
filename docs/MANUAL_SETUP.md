@@ -45,7 +45,8 @@ export AG_TOKEN_SECRET="change-me-to-32-plus-random-bytes!!"
 ./bin/controlplane
 ```
 
-It listens on `:8091`. On first start it prints generated signing-key seeds —
+It listens on `127.0.0.1:8091` (loopback only; set `AG_LISTEN=0.0.0.0:8091`
+to expose it, behind TLS). On first start it prints generated signing-key seeds —
 save them as `AG_GRANT_KEY_SEED` and `AG_EPOCH_KEY_SEED` so keys survive
 restarts.
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -30,7 +31,7 @@ import (
 
 type Config struct {
 	DatabaseURL string
-	Listen      string // defaults to ":8091"
+	Listen      string // see ListenAddr: defaults to 127.0.0.1:8091
 	TokenSecret string // >= 32 bytes
 
 	GrantKeySeed []byte // 32-byte ed25519 seed
@@ -43,6 +44,36 @@ type Config struct {
 	SlackChannel       string
 
 	Logger *slog.Logger // defaults to slog.Default()
+}
+
+// DefaultListen is loopback-only: the control plane serves plain HTTP, with
+// an unauthenticated Enroll and approval callback (audit H11).
+const DefaultListen = "127.0.0.1:8091"
+
+// ListenAddr resolves the configured listen address. Empty means
+// DefaultListen, and an address with no host (":8091", the old default
+// that bound every interface) is narrowed to 127.0.0.1. To listen on the
+// network, name the host explicitly ("0.0.0.0:8091").
+func ListenAddr(s string) string {
+	if s == "" {
+		return DefaultListen
+	}
+	if host, port, err := net.SplitHostPort(s); err == nil && host == "" {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return s
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Run starts the full control plane and blocks until ctx is cancelled or a
@@ -59,9 +90,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if len(cfg.TokenSecret) < 32 {
 		return errors.New("token secret must be at least 32 bytes")
 	}
-	listen := cfg.Listen
-	if listen == "" {
-		listen = ":8091"
+	listen := ListenAddr(cfg.Listen)
+	if !isLoopbackAddr(listen) {
+		log.Warn("control plane listening beyond loopback over plain HTTP: Enroll, /approval/callback and gateway credentials are exposed to the network — put it behind TLS",
+			"listen", listen)
 	}
 
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
