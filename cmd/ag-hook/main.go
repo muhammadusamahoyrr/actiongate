@@ -3,7 +3,8 @@
 // passing the call as JSON on stdin. We turn that into a `gateway check` and
 // translate the verdict back into Claude Code's hook contract:
 //
-//	allowed            -> exit 0, no output   (Claude Code proceeds normally)
+//	allowed            -> exit 0, no output   (Claude Code proceeds normally;
+//	                      gateway warnings go to stderr and ag-hook.log)
 //	denied             -> exit 2 + reason     (Claude Code blocks, model sees why)
 //	requires_approval  -> gateway blocks until a human decides, then as above
 //	anything uncertain -> exit 2 (fail closed; the action does NOT run)
@@ -67,6 +68,34 @@ type checkResult struct {
 func block(reason string) {
 	fmt.Fprintln(os.Stderr, reason)
 	os.Exit(2)
+}
+
+// maxHookLog bounds ag-hook.log; past it the log is rotated to .1.
+const maxHookLog = 1 << 20
+
+// recordWarning surfaces a non-blocking gateway warning: on stderr (Claude
+// Code shows a successful hook's stderr in its transcript view) and appended
+// to ag-hook.log in the actiongate config dir, so it survives the session.
+// It never fails the hook: the action was allowed.
+func recordWarning(msg string) {
+	fmt.Fprintln(os.Stderr, "actiongate warning:", msg)
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, "actiongate", "ag-hook.log")
+	if fi, err := os.Stat(path); err == nil && fi.Size() > maxHookLog {
+		_ = os.Rename(path, path+".1")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format(time.RFC3339), strings.ReplaceAll(msg, "\n", " | "))
 }
 
 func envOr(key, fallback string) string {
@@ -197,7 +226,13 @@ func main() {
 
 	switch code {
 	case 0:
-		os.Exit(0) // allowed — let Claude Code's normal flow continue
+		// Allowed. Anything the gateway still wrote to stderr is a problem
+		// that did not change the verdict — most importantly a failed state
+		// save. Those used to be dropped here, which made them invisible.
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			recordWarning(msg)
+		}
+		os.Exit(0) // let Claude Code's normal flow continue
 	case 2:
 		reason := res.Explanation
 		if reason == "" {
