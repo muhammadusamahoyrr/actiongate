@@ -79,7 +79,7 @@ ActionGate adds what neither of them can do:
 
 **Use them together.** Keep a `CLAUDE.md`: it makes the agent attempt fewer bad actions in the first place. Keep a few deny rules for the obvious cases. Let ActionGate be the enforcement point that understands the command, asks a human when it matters, and can prove afterwards what ran.
 
-ActionGate only governs what reaches it. By default that is the tools matched by the hook (`Read`, `Edit`, `Write`, `NotebookEdit`, `Bash`, `Grep`) and MCP servers wrapped with `gateway mcp`. To govern more tools, widen the matcher, for example `actiongate protect claude-code -matcher 'Read|Edit|Write|NotebookEdit|Bash|Grep|WebFetch|mcp__.*'`.
+ActionGate only governs what reaches it. By default that is the tools matched by the hook (`Read`, `Edit`, `MultiEdit`, `Write`, `NotebookEdit`, `Bash`, `PowerShell`, `Grep`) and MCP servers wrapped with `gateway mcp`. To govern more tools, widen the matcher, for example `actiongate protect claude-code -matcher 'Read|Edit|MultiEdit|Write|NotebookEdit|Bash|PowerShell|Grep|WebFetch|mcp__.*'`.
 
 ---
 
