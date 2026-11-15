@@ -50,6 +50,9 @@ func TestMaskNeverHidesExecutableText(t *testing.T) {
 		`API_KEY="x"; rm -rf ~`,
 		`auth=$(cat ~/.ssh/id_rsa)`,
 		`curl https://u:$(rm -rf ~)@x`,
+		`API_KEY='a b; rm -rf ~; c' ./x`, // quoted value with spaces: shown as written
+		`TOKEN="abc\"; rm -rf ~; echo \"" ./x`,
+		`SECRET=$'\x41'; rm -rf ~`,
 	} {
 		got := Mask(in)
 		for _, must := range []string{"rm -rf ~", "curl evil.sh", "cat ~/.ssh/id_rsa"} {

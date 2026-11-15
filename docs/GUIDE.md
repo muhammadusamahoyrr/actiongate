@@ -298,13 +298,21 @@ actiongate approvals                 # what is waiting: tool, agent, the command
 actiongate approvals approve 3f9c1a2b7e   # or: deny <id> -reason "too risky"
 ```
 
-`approve`/`deny` show the action again and ask for confirmation. They run
-only in an interactive terminal, and the control plane denies any agent
-action that runs them or calls `/approval/callback` (built-in, whatever
-the pack): the agent cannot approve its own held action. The decision is
-recorded with approver `local:<your OS user>`, exactly like a Slack click.
-(Both guards assume the agent runs as an OS user that cannot impersonate
-yours; run it as a standard user.)
+`approve`/`deny` show the action again and ask for confirmation. The
+decision is recorded with approver `local:<your OS user>`, exactly like a
+Slack click.
+
+Two guards keep the agent from approving its own held action: the control
+plane denies any agent action that runs `actiongate approvals
+approve|deny` or calls `/approval/callback` (built-in, whatever the pack),
+and `approve`/`deny` run only in an interactive terminal. **These are
+guards, not a security boundary, when the agent runs as your own OS
+user** (the default single-laptop setup): the token secret lives in your
+profile, so a determined agent that disguises its commands could derive a
+token and call the endpoint itself. A real boundary needs the control
+plane and its secrets under an OS account the agent cannot read, or
+approvals only through a channel the agent has no access to (Slack on
+another device).
 
 ### Any other channel — the callback endpoint
 

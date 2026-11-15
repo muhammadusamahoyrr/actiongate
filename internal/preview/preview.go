@@ -117,7 +117,11 @@ var maskers = []struct {
 	// key=value / key: value for credential-like keys: a single-quoted
 	// value (literal in every shell), a double-quoted one without
 	// expansions, or a bare one without metacharacters.
-	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential)[A-Za-z0-9_]*)(\s*[=:]\s*)('[^'\n]*'|"[^"$` + "`" + `\\\n]*"|[A-Za-z0-9._~+/=@%:!,-]+)`), "$1$2" + masked},
+	// The value — bare or quoted — must consist ONLY of token characters:
+	// no spaces, quotes, $, backslashes or other metacharacters inside, so
+	// a regex over raw text can never disagree with the shell about where
+	// the value ends. Anything else is shown as written.
+	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential)[A-Za-z0-9_]*)(\s*[=:]\s*)('[A-Za-z0-9._~+/=@%:!,-]+'|"[A-Za-z0-9._~+/=@%:!,-]+"|[A-Za-z0-9._~+/=@%:!,-]+)(?:[\s;&|)]|$)`), "$1$2" + masked + " "},
 	// Credentials in URLs.
 	{regexp.MustCompile(`(://[A-Za-z0-9._~%-]+):[A-Za-z0-9._~%!*'+=,-]+@`), "$1:" + masked + "@"},
 	// Well-known token shapes.
