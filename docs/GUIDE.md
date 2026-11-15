@@ -240,6 +240,18 @@ A policy is JSON: a `default_decision` plus an ordered list of rules.
   cannot evaluate. Prefer facts over `params.command.contains(...)`: text
   matching misses `rm -fr`, `rm -r -f` and `bash -c '...'`
   ([evaluation](paper/main.pdf)).
+- **Scripts a command runs are judged too.** When a command runs a local
+  script (`bash cleanup.sh`, `./cleanup.sh`, `source x.sh`, `python job.py`,
+  `node x.js`, `npm run <script>`, `.\x.ps1`, also inside `bash -c` and
+  `eval`), the gateway reads the script from the session's working
+  directory and the control plane analyzes its text as if it had been
+  typed inline. So writing `rm -rf ~` into a file and then running the file
+  gets the same facts as typing it. A script that cannot be read in full
+  (missing because the same command creates it, over 256 KiB, binary
+  handed to an interpreter, or behind a `cd` to an unresolvable directory)
+  is `opaque`. Known limits: a file rewritten by a *parallel* tool call
+  between the check and the run, `make` targets, and npm lifecycle scripts
+  run by `npm install`.
 - **Built-in protection** applies whatever pack is active: reading
   ActionGate's own secrets (`facts.self_secret`) is always denied, before
   any pack rule runs, and an action that would change its enforcement

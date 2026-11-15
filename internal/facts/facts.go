@@ -212,6 +212,11 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 	// The detectors set SelfSecret from the path they resolved. As a
 	// second, fail-closed net: a secret access whose raw text also names
 	// actiongate's config directory counts too (it can only add a deny).
+	// Scripts the command runs, attached by the gateway (write-then-run,
+	// audit H2): judged as if their text had been typed inline.
+	if _, ok := params[ScriptsKey]; ok {
+		f.merge(deriveScripts(params, o))
+	}
 	if f.SecretAccess && mentionsActiongateSecret(params) {
 		f.SelfSecret = true
 		f.add("reads actiongate's own secrets (its config directory)")
