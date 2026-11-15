@@ -79,7 +79,25 @@ func TestSelfTamper(t *testing.T) {
 		{"PowerShell", map[string]any{"command": `Set-Location .claude; Set-Content settings.json '{}'`}, true},
 		{"mcp__fs__write_file", map[string]any{"path": "/p/.claude/settings.json"}, true}, // unknown tool: assume writer
 
+		// Second review round.
+		{"mcp__fs__edit", map[string]any{"edits": []any{map[string]any{"file": ".claude/settings.json", "old": "a", "new": "b"}}}, true},
+		{"PowerShell", map[string]any{"command": `Remove-Item -Recurse $env:APPDATA\actiongate`}, true},
+		{"Bash", map[string]any{"command": "rm -rf .config/actiongate"}, true},
+		{"Bash", map[string]any{"command": "rm -rf .cla*"}, true},
+		{"Bash", map[string]any{"command": "echo {} > .clau?e/settings.*"}, true},
+		{"Write", map[string]any{"file_path": `C:\p\.claude\settings.json.`}, true},
+		{"Write", map[string]any{"file_path": `C:\p\.claude\settings.json::$DATA`}, true},
+		{"Bash", map[string]any{"command": "cp -r /tmp/evil/. .claude/"}, true},
+		{"Bash", map[string]any{"command": "cp -t .claude /tmp/settings.local.json"}, true},
+		{"PowerShell", map[string]any{"command": `Get-Item .claude\settings.json | Remove-Item`}, true},
+		{"PowerShell", map[string]any{"command": `Get-ChildItem .claude | Remove-Item -Recurse`}, true},
+
 		// ...without flagging ordinary work.
+		{"Bash", map[string]any{"command": "rm -rf ~/src/actiongate/build"}, false}, // a checkout named actiongate
+		{"Bash", map[string]any{"command": "cp notes.md .claude/commands/"}, false},
+		{"PowerShell", map[string]any{"command": `Get-Content .claude\settings.json | Set-Content backup.json`}, false}, // reads the control file only
+		{"PowerShell", map[string]any{"command": `Get-Item .claude | Move-Item -Destination C:\tmp\x`}, true},
+		{"mcp__fs__list", map[string]any{"path": "src"}, false},
 		{"Bash", map[string]any{"command": "sed -e 's/i/I/' .claude/settings.json"}, false}, // -e takes the script; no -i
 		{"Bash", map[string]any{"command": "sed -n '/hooks/p' .claude/settings.json"}, false},
 		{"Bash", map[string]any{"command": "cd src && echo x > settings.json"}, false},

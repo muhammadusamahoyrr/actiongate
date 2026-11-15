@@ -29,17 +29,32 @@ func IsControlPath(p string) bool {
 		return false
 	}
 	base := path.Base(p)
-	dir := path.Base(path.Dir(p))
-	switch base {
-	case "ag-hook", "ag-hook.exe", "gateway.json", "gateway.json.lock":
+	dir := path.Dir(p)
+	parent := path.Base(dir)
+	if matchName(base, "ag-hook", "ag-hook.exe", "gateway.json", "gateway.json.lock") {
 		return true
-	case "settings.json", "settings.local.json":
-		// Claude Code's hook configuration, project or user level.
-		return dir == ".claude"
-	case "dev.json":
-		return dir == "actiongate"
 	}
-	return dir == ".claude" && strings.ContainsAny(base, "*?[")
+	if matchName(parent, ".claude") {
+		// Claude Code's hook configuration, project or user level. Any
+		// glob inside .claude counts too: it can expand to the settings.
+		return matchName(base, "settings.json", "settings.local.json") || strings.ContainsAny(base, "*?[")
+	}
+	return matchName(base, "dev.json") && isActiongateConfigDir(dir)
+}
+
+// matchName reports whether one path component is, or as a glob could
+// expand to, one of names.
+func matchName(component string, names ...string) bool {
+	glob := strings.ContainsAny(component, "*?[")
+	for _, n := range names {
+		if component == n {
+			return true
+		}
+		if ok, _ := path.Match(component, n); glob && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // IsControlDir reports whether a path names a directory that holds control
@@ -51,15 +66,24 @@ func IsControlDir(p string) bool {
 	if p == "" {
 		return false
 	}
-	if path.Base(p) == ".claude" {
+	return matchName(path.Base(p), ".claude") || isActiongateConfigDir(p)
+}
+
+// isActiongateConfigDir: an "actiongate" directory under a user config
+// root, spelled literally or through a variable ($env:APPDATA,
+// %APPDATA%, $XDG_CONFIG_HOME). A parent the analyzer cannot read (a
+// glob) counts. A bare "actiongate" (e.g. the source checkout) does not.
+func isActiongateConfigDir(p string) bool {
+	if !matchName(path.Base(p), "actiongate") {
+		return false
+	}
+	parent := path.Base(path.Dir(p))
+	switch parent {
+	case "roaming", ".config", "application support", "$env:appdata", "%appdata%", "$appdata",
+		"$xdg_config_home", "${xdg_config_home}", "$env:xdg_config_home":
 		return true
 	}
-	for _, suffix := range []string{"/appdata/roaming/actiongate", "/.config/actiongate", "/application support/actiongate"} {
-		if strings.HasSuffix(p, suffix) {
-			return true
-		}
-	}
-	return false
+	return strings.ContainsAny(parent, "*?[")
 }
 
 // controlBaseName reports whether a bare file name is one a control file
@@ -72,9 +96,27 @@ func controlBaseName(p string) bool {
 	return false
 }
 
+// normPath lower-cases and slashes p and undoes the spellings Windows
+// treats as the same file: trailing dots and spaces on a component
+// ("settings.json." is settings.json) and an NTFS stream suffix
+// ("settings.json::$DATA", "x.json:alt").
 func normPath(p string) string {
 	p = strings.Trim(strings.TrimSpace(p), `"'`)
 	p = strings.ToLower(slash(p))
+	parts := strings.Split(p, "/")
+	for i, c := range parts {
+		if i == 0 && len(c) == 2 && c[1] == ':' {
+			continue // drive letter
+		}
+		if j := strings.Index(c, ":"); j > 0 && !strings.HasPrefix(c, "$") {
+			c = c[:j] // not $env:NAME, which is a variable, not a stream
+		}
+		if t := strings.TrimRight(c, ". "); t != "" && t != c && c != "." && c != ".." {
+			c = t
+		}
+		parts[i] = c
+	}
+	p = strings.Join(parts, "/")
 	if len(p) > 1 {
 		p = strings.TrimRight(p, "/")
 	}
@@ -175,25 +217,42 @@ func (a *shellAnalyzer) tamperArgs(name string, rest []arg) {
 		}
 	case copyLike[name]:
 		var ops []arg
-		for _, x := range rest {
-			if !strings.HasPrefix(x.text, "-") {
-				ops = append(ops, x)
+		dest, recursive := "", false
+		for i := 0; i < len(rest); i++ {
+			t := rest[i].text
+			switch {
+			case t == "-t" || t == "--target-directory":
+				if i+1 < len(rest) {
+					dest = rest[i+1].text
+					i++
+				}
+			case strings.HasPrefix(t, "--target-directory="):
+				dest = strings.TrimPrefix(t, "--target-directory=")
+			case t == "--recursive" || t == "--archive":
+				recursive = true
+			case strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--"):
+				recursive = recursive || strings.ContainsAny(t, "rRa")
+			case !strings.HasPrefix(t, "-"):
+				ops = append(ops, rest[i])
 			}
 		}
-		if len(ops) == 0 {
-			return
+		srcs := ops
+		if dest == "" {
+			if len(ops) == 0 {
+				return
+			}
+			dest, srcs = ops[len(ops)-1].text, ops[:len(ops)-1]
 		}
-		dest := ops[len(ops)-1].text
 		if a.cwd.file(dest) {
 			hit("overwrites actiongate control file " + path.Base(slash(dest)))
 			return
 		}
-		// Copying a file named like a control file INTO a control
-		// directory overwrites the real one.
+		// Copying INTO a control directory overwrites the real file when
+		// a source is named like one, or is a tree that may contain one.
 		if a.cwd.target(dest) {
-			for _, src := range ops[:len(ops)-1] {
-				if controlBaseName(src.text) {
-					hit("overwrites a file in actiongate control directory " + path.Base(slash(dest)))
+			for _, src := range srcs {
+				if recursive || controlBaseName(src.text) || strings.ContainsAny(src.text, "*?[") {
+					hit("writes into actiongate control directory " + path.Base(slash(dest)))
 					return
 				}
 			}
@@ -247,6 +306,12 @@ var psWriters = set("set-content", "sc", "add-content", "ac", "clear-content", "
 	"move-item", "move", "mv", "mi", "copy-item", "copy", "cp", "cpi", "set-itemproperty", "sp",
 	"set-acl", "tee-object", "tee")
 
+// psPipeTargets act on the items piped into them (delete, move, rename,
+// clear, re-permission). Content writers (Set-Content backup.json) write
+// their own path, so piping a control file into one only reads it.
+var psPipeTargets = set("remove-item", "rm", "ri", "del", "erase", "rmdir", "rd", "rename-item", "ren", "rni",
+	"move-item", "move", "mv", "mi", "clear-content", "clc", "set-itemproperty", "sp", "set-acl")
+
 // psLocation are the cmdlets and aliases that change directory.
 var psLocation = set("set-location", "sl", "cd", "chdir", "push-location", "pushd")
 
@@ -293,12 +358,19 @@ func (st *psTamperState) statement(toks []string) (string, bool) {
 		}
 	}
 	writer, location := "", false
+	// upstream: a control path named earlier in this statement. A writer
+	// later in the pipeline (Get-Item .claude\settings.json | Remove-Item)
+	// takes its target from there, with no path of its own.
+	upstream := ""
 	for i, t := range toks {
 		if i == 0 || psSeparator(toks[i-1]) {
 			writer, location = "", false
 			switch n := cmdName(strings.Trim(t, `"'`)); {
 			case psWriters[n]:
 				writer = n
+				if i > 0 && toks[i-1] == "|" && upstream != "" && psPipeTargets[n] {
+					return n + " modifies piped actiongate control path " + path.Base(slash(upstream)), true
+				}
 				continue
 			case psLocation[n]:
 				location = true
@@ -320,6 +392,11 @@ func (st *psTamperState) statement(toks []string) (string, bool) {
 			return "redirects output into actiongate control file", true
 		}
 		if writer == "" && !netWrite {
+			for _, c := range psCandidates(t) {
+				if st.cwd.target(c) {
+					upstream = c
+				}
+			}
 			continue
 		}
 		for _, c := range psCandidates(t) {

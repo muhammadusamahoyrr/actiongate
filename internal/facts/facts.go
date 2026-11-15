@@ -165,15 +165,39 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 		// Read-only, or no file operand.
 	default:
 		// A tool we do not know (a new built-in, an MCP write_file, ...):
-		// assume it may write any path it is given.
-		for _, k := range []string{"file_path", "notebook_path", "path", "destination", "target"} {
-			if p := str(k); IsControlPath(p) || IsControlDir(p) {
-				f.selfTamper(tool + " on actiongate control path " + path.Base(slash(p)))
-				break
-			}
+		// assume it may write any path it is given, under any key and at
+		// any depth (edits: [{path: ...}]).
+		if p, ok := findString(params, 0, func(s string) bool { return IsControlPath(s) || IsControlDir(s) }); ok {
+			f.selfTamper(tool + " on actiongate control path " + path.Base(slash(p)))
 		}
 	}
 	return f
+}
+
+// findString returns the first string anywhere in v (maps, slices, nested)
+// that match accepts. Depth is bounded so a hostile payload cannot recurse
+// without end.
+func findString(v any, depth int, match func(string) bool) (string, bool) {
+	if depth > 8 {
+		return "", false
+	}
+	switch x := v.(type) {
+	case string:
+		return x, match(x)
+	case map[string]any:
+		for _, e := range x {
+			if s, ok := findString(e, depth+1, match); ok {
+				return s, true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if s, ok := findString(e, depth+1, match); ok {
+				return s, true
+			}
+		}
+	}
+	return "", false
 }
 
 // secretNames are probes for glob arguments: a pattern that would match any
