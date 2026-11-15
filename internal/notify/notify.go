@@ -43,6 +43,8 @@ func (p LogPort) Send(_ context.Context, msg Message) error {
 		"approval_request_id", msg.ApprovalRequestID,
 		"approver_target", msg.ApproverTarget,
 		"title", msg.Title,
+		"body", msg.Body,
+		"approve_with", "actiongate approvals list / approve <id>",
 	)
 	return nil
 }
