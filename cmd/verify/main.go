@@ -5,7 +5,12 @@
 // verified, 1 problems found, 2 operational error.
 //
 //	verify -database-url URL -tenant ID [-stream ID]
-//	       -key KEYID=BASE64PUB [-key ...]
+//	       -key KEYID=BASE64PUB [-key ...] [-checkpoint FILE]
+//
+// With -checkpoint, each stream's last sealed epoch is compared with the
+// one recorded in FILE by the previous run, and FILE is updated when every
+// stream verifies. Keep FILE where the database host cannot write it: it
+// is what detects a chain cut back by someone able to delete epochs.
 package main
 
 import (
@@ -51,6 +56,7 @@ func run() int {
 	tenantFlag := flag.String("tenant", "", "tenant id (required)")
 	streamFlag := flag.String("stream", "", "stream id (default: every stream of the tenant)")
 	flag.Var(keys, "key", "epoch signing key as KEYID=BASE64PUB (repeatable)")
+	checkpointPath := flag.String("checkpoint", "", "file holding each stream's last verified head; compared, then updated when all streams verify")
 	flag.Parse()
 
 	if *databaseURL == "" || *tenantFlag == "" || len(keys) == 0 {
@@ -101,6 +107,26 @@ func run() int {
 			return 2
 		}
 	}
+	var cp checkpoint
+	if *checkpointPath != "" {
+		if cp, err = loadCheckpoint(*checkpointPath, tenantID); err != nil {
+			fmt.Fprintln(os.Stderr, "verify:", err)
+			return 2
+		}
+		// A stream the checkpoint knows must still exist, even if every
+		// one of its events is gone.
+		if *streamFlag == "" {
+			seen := map[string]bool{}
+			for _, s := range streams {
+				seen[s.String()] = true
+			}
+			for s := range cp.Streams {
+				if id, err := uuid.Parse(s); err == nil && !seen[s] {
+					streams = append(streams, id)
+				}
+			}
+		}
+	}
 	if len(streams) == 0 {
 		fmt.Fprintln(os.Stderr, "verify: tenant has no audit streams")
 		return 2
@@ -113,13 +139,21 @@ func run() int {
 			fmt.Fprintf(os.Stderr, "verify: stream %s: %v\n", streamID, err)
 			return 2
 		}
+		if *checkpointPath != "" {
+			checkAgainst(cp, streamID, &report)
+			if report.Head != nil {
+				cp.Streams[streamID.String()] = *report.Head
+			}
+		}
 		out, _ := json.Marshal(map[string]any{
-			"stream":        streamID.String(),
-			"ok":            report.OK(),
-			"epochs":        report.Epochs,
-			"events_sealed": report.EventsSealed,
-			"unsealed_tail": report.UnsealedTail,
-			"problems":      report.Problems,
+			"stream":           streamID.String(),
+			"ok":               report.OK(),
+			"epochs":           report.Epochs,
+			"events_sealed":    report.EventsSealed,
+			"unsealed_tail":    report.UnsealedTail,
+			"requests_checked": report.RequestsChecked,
+			"head":             report.Head,
+			"problems":         report.Problems,
 		})
 		fmt.Println(string(out))
 		if !report.OK() {
@@ -127,7 +161,13 @@ func run() int {
 		}
 	}
 	if failed {
-		return 1
+		return 1 // the checkpoint is only advanced past a clean run
+	}
+	if *checkpointPath != "" {
+		if err := cp.save(*checkpointPath); err != nil {
+			fmt.Fprintln(os.Stderr, "verify: save checkpoint:", err)
+			return 2
+		}
 	}
 	return 0
 }

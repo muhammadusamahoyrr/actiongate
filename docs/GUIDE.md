@@ -385,6 +385,38 @@ chain is never touched.
 > signing seed under the same key ID makes previously sealed epochs
 > unverifiable. `actiongate up` persists the seeds for you.
 
+### What verify checks
+
+- **Every request is bound.** Each `ActionCreated` event records the
+  request fingerprint: a hash of the agent, the tool and the exact
+  parameters. `verify` recomputes it from the stored request, so changing
+  what the agent asked for after the fact is caught (`requests_checked`
+  counts these). Events from before this field existed are skipped.
+- **Policy changes are audited.** Each new policy version writes a
+  `PolicyChanged` event with its version and content hash.
+- **Deleted epochs are caught.** Sealed epochs are append-only in the
+  database. If epochs are removed anyway (only a superuser can switch the
+  guard off), the events they sealed are left pointing at nothing, and
+  `verify` reports them.
+
+### Catching a shortened chain: `-checkpoint`
+
+A signed chain proves what it contains, not how long it used to be.
+Someone able to remove the newest epochs *and* the events they sealed
+leaves a shorter chain that still verifies. To catch that, have `verify`
+remember each stream's last sealed epoch (its `head`):
+
+```bash
+verify -database-url "$AG_DATABASE_URL" -tenant <TENANT_ID> \
+  -key epoch-1=<EPOCH_PUBLIC_KEY_BASE64> -checkpoint /safe/place/ag-checkpoint.json
+```
+
+Each run checks that the head recorded last time is still in the chain,
+then records the new head. The file is only updated after a clean run.
+Keep it somewhere the database host cannot write, such as another
+machine, a write-once bucket, or a cron job's own storage. Otherwise
+whoever can cut the chain can rewrite the file too.
+
 ## 8. Running unattended
 
 ### Windows: start at sign-in

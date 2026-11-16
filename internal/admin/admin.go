@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
 )
 
@@ -63,6 +65,28 @@ func SetPolicy(ctx context.Context, pool *pgxpool.Pool, tenantID uuid.UUID, poli
 		tenantID, policyJSON, contentHash[:]).Scan(&version)
 	if err != nil {
 		return 0, fmt.Errorf("store snapshot: %w", err)
+	}
+	// Audit M9: a policy change is itself audited, in the same transaction
+	// and on the tenant's stream, so the sealed chain shows when each
+	// version took effect and which content it had.
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return 0, fmt.Errorf("uuidv7: %w", err)
+	}
+	meta, err := json.Marshal(map[string]any{
+		"policy_version": version,
+		"content_hash":   hex.EncodeToString(contentHash[:]),
+		"created_by":     "admin",
+	})
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx,
+		`insert into audit_events (id, tenant_id, stream_id, event_type, attested_by, metadata, recorded_at)
+		 values ($1, $2, $3, $4, $5, $6, $7)`,
+		eventID, tenantID, domain.StreamFor(tenantID), string(domain.EventPolicyChanged),
+		domain.AttestedByOperator+":admin", meta, time.Now().UTC()); err != nil {
+		return 0, fmt.Errorf("audit policy change: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit: %w", err)

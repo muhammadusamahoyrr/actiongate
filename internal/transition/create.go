@@ -116,9 +116,16 @@ func Create(ctx context.Context, pool *pgxpool.Pool, req CreateRequest) (CreateR
 		StreamID:   req.StreamID,
 		Type:       domain.EventActionCreated,
 		AttestedBy: domain.AttestedByControlPlane,
+		// Audit H7: the sealed event binds the exact request. The
+		// fingerprint covers agent, tool and canonical params, so a later
+		// edit to the stored params no longer matches the signed chain.
 		Metadata: map[string]any{
-			"agent_id":  req.AgentID,
-			"tool_name": req.ToolName,
+			"agent_id":            req.AgentID,
+			"tool_name":           req.ToolName,
+			"request_fingerprint": hex.EncodeToString(fp),
+			"session_id":          req.SessionID.String(),
+			"environment":         req.Environment,
+			"policy_version":      req.PolicyVersion,
 		},
 	}
 	if err := appendEvent(ctx, tx, req.TenantID, actionID, ev, createdAt); err != nil {

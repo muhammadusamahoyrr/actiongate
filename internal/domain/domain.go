@@ -76,6 +76,9 @@ const (
 	EventOutcomeReconciled           EventType = "OutcomeReconciled"
 	EventIdempotencyConflict         EventType = "IdempotencyConflict"
 	EventInvalidTransitionAttempted  EventType = "InvalidTransitionAttempted"
+	// PolicyChanged records a new policy snapshot for a tenant (audit M9).
+	// It belongs to no action.
+	EventPolicyChanged EventType = "PolicyChanged"
 )
 
 const (

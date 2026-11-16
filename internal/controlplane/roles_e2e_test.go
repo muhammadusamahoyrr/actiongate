@@ -3,6 +3,7 @@ package controlplane_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
@@ -26,8 +27,10 @@ import (
 	"github.com/muhammadusamahoyrr/actiongate/internal/controlplane"
 	"github.com/muhammadusamahoyrr/actiongate/internal/dbroles"
 	"github.com/muhammadusamahoyrr/actiongate/internal/dbruntime"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 	"github.com/muhammadusamahoyrr/actiongate/internal/gateway"
 	"github.com/muhammadusamahoyrr/actiongate/internal/queue"
+	"github.com/muhammadusamahoyrr/actiongate/internal/seal"
 	"github.com/muhammadusamahoyrr/actiongate/migrations"
 	"github.com/muhammadusamahoyrr/actiongate/policies"
 )
@@ -88,12 +91,13 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 
 	addr := freeAddr(t)
 	tokenSecret := randomString(t, 32)
+	epochSeed := randomBytes(t, 32)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- controlplane.Run(ctx, controlplane.Config{
 			DatabaseURL: appDSN, SealerDatabaseURL: sealerDSN, SkipQueueMigrate: true,
 			Listen: addr, TokenSecret: tokenSecret,
-			GrantKeySeed: randomBytes(t, 32), EpochKeySeed: randomBytes(t, 32),
+			GrantKeySeed: randomBytes(t, 32), EpochKeySeed: epochSeed,
 		})
 	}()
 	serverURL := "http://" + addr
@@ -189,18 +193,22 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 		t.Errorf("approval status = %q, %v; want approved", status, err)
 	}
 
-	// The sealer (its own BYPASSRLS role) seals the chain.
+	// The sealer (its own BYPASSRLS role) seals the chain, up to and
+	// including the first action's ActionCreated event.
 	deadline := time.Now().Add(45 * time.Second)
 	for {
-		var epochs int
-		if err := owner.QueryRow(ctx, `select count(*) from audit_epochs where tenant_id = $1`, tenant).Scan(&epochs); err != nil {
+		var sealed bool
+		if err := owner.QueryRow(ctx,
+			`select exists (select 1 from audit_events
+			                 where action_request_id = $1 and event_type = 'ActionCreated' and epoch_id is not null)`,
+			res.ActionID).Scan(&sealed); err != nil {
 			t.Fatal(err)
 		}
-		if epochs > 0 {
+		if sealed {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("sealer running as ag_sealer sealed no epoch within 45s")
+			t.Fatal("sealer running as ag_sealer did not seal the action within 45s")
 		}
 		select {
 		case err := <-errCh:
@@ -209,6 +217,79 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 		}
 	}
 	cancel()
+	<-errCh // the sealer has stopped; the chain is now still
+
+	verifyAuditCoverage(t, owner, tenant, epochSeed, uuid.MustParse(res.ActionID))
+}
+
+// verifyAuditCoverage checks the sealed chain end to end, then tampers
+// with it the way a database administrator could and checks that verify
+// notices: the policy change is sealed (M9), each request is bound by its
+// fingerprint (H7), and deleting epochs is detected (H8).
+func verifyAuditCoverage(t *testing.T, owner *pgxpool.Pool, tenant uuid.UUID, epochSeed []byte, actionID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	_, pub, err := seal.NewEd25519SignerFromSeed("epoch-1", epochSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]ed25519.PublicKey{"epoch-1": pub}
+	stream := domain.StreamFor(tenant)
+	report, err := seal.Verify(ctx, owner, tenant, stream, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK() || report.RequestsChecked == 0 || report.Head == nil {
+		t.Fatalf("clean chain: %+v", report)
+	}
+	var policyEvents int
+	if err := owner.QueryRow(ctx,
+		`select count(*) from audit_events
+		  where tenant_id = $1 and stream_id = $2 and event_type = 'PolicyChanged' and epoch_id is not null`,
+		tenant, stream).Scan(&policyEvents); err != nil || policyEvents != 1 {
+		t.Errorf("sealed PolicyChanged events = %d (%v), want 1", policyEvents, err)
+	}
+	head := *report.Head
+
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := owner.Exec(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	hasProblem := func(r seal.Report, substr string) bool {
+		for _, p := range r.Problems {
+			if strings.Contains(p, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// H7: rewrite what the agent asked for, past the append-only trigger.
+	exec(`alter table action_requests disable trigger action_requests_append_only`)
+	exec(`update action_requests set tool_params = '{"command":"rm -rf /"}' where id = $1`, actionID)
+	exec(`alter table action_requests enable trigger action_requests_append_only`)
+	if report, err = seal.Verify(ctx, owner, tenant, stream, keys); err != nil {
+		t.Fatal(err)
+	}
+	if !hasProblem(report, "does not match its sealed fingerprint") {
+		t.Errorf("rewritten request params were not detected: %v", report.Problems)
+	}
+
+	// H8: cut the chain back by deleting its newest epoch.
+	exec(`alter table audit_epochs disable trigger audit_epochs_guard`)
+	exec(`delete from audit_epochs where tenant_id = $1 and stream_id = $2 and last_sequence = $3`, tenant, stream, head.LastSequence)
+	exec(`alter table audit_epochs enable trigger audit_epochs_guard`)
+	if report, err = seal.Verify(ctx, owner, tenant, stream, keys); err != nil {
+		t.Fatal(err)
+	}
+	if !hasProblem(report, "belong to no epoch") {
+		t.Errorf("deleted epoch was not detected: %v", report.Problems)
+	}
+	if report.Contains(head) {
+		t.Error("chain still contains the deleted head; a checkpoint would not catch the cut")
+	}
 }
 
 func freeAddr(t *testing.T) string {

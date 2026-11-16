@@ -122,6 +122,11 @@ func Ensure(ctx context.Context, owner *pgxpool.Pool, appPassword, sealerPasswor
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + app,
 		`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ` + app,
 		`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO ` + app,
+		// The audit trail is append-only for the app: it writes events and
+		// reads epochs (health), and never changes or removes either.
+		// Sealing is the sealer's job.
+		`REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM ` + app,
+		`REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON audit_epochs FROM ` + app,
 
 		// Sealer: exactly what sealing does — read the audit tables, set the
 		// four seal columns on events, insert epochs.
