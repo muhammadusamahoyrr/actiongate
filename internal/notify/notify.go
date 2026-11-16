@@ -43,6 +43,9 @@ func (p LogPort) Send(_ context.Context, msg Message) error {
 		"approval_request_id", msg.ApprovalRequestID,
 		"approver_target", msg.ApproverTarget,
 		"title", msg.Title,
+		// The body (the command) is not logged: the log is long-lived and
+		// widely readable. `actiongate approvals list` shows it on demand.
+		"approve_with", "actiongate approvals list / approve <id>",
 	)
 	return nil
 }
