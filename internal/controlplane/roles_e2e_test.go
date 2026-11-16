@@ -217,7 +217,11 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 		}
 	}
 	cancel()
-	<-errCh // the sealer has stopped; the chain is now still
+	// Wait for the control plane, and with it the sealer, to stop, so the
+	// chain holds still while it is checked and tampered with.
+	if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("control plane: %v", err)
+	}
 
 	verifyAuditCoverage(t, owner, tenant, epochSeed, uuid.MustParse(res.ActionID))
 }
