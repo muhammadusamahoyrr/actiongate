@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/fsutil"
+
+	"github.com/muhammadusamahoyrr/actiongate/internal/controlplane"
 )
 
 // devConfig is the persisted local-development environment written by
@@ -34,7 +36,11 @@ type devConfig struct {
 	TokenSecret      string `json:"token_secret"`
 	GrantKeySeed     string `json:"grant_key_seed"` // base64 32 bytes
 	EpochKeySeed     string `json:"epoch_key_seed"` // base64 32 bytes
-	TenantID         string `json:"tenant_id,omitempty"`
+	// GrantKeyID / EpochKeyID name the keys; empty means the defaults
+	// ("grant-1", "epoch-1"). Set a new id when rotating a seed.
+	GrantKeyID string `json:"grant_key_id,omitempty"`
+	EpochKeyID string `json:"epoch_key_id,omitempty"`
+	TenantID   string `json:"tenant_id,omitempty"`
 
 	// Optional Slack approvals. Set here (not env) so the Windows service —
 	// which never sees your shell environment — picks them up too.
@@ -217,4 +223,12 @@ func redactURL(raw string) string {
 		return "(unparseable database URL)"
 	}
 	return u.Redacted()
+}
+
+// epochKeyID is the epoch signing key id in use.
+func (c *devConfig) epochKeyID() string {
+	if c.EpochKeyID != "" {
+		return c.EpochKeyID
+	}
+	return controlplane.DefaultEpochKeyID
 }

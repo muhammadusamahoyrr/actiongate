@@ -47,6 +47,12 @@ type Config struct {
 
 	GrantKeySeed []byte // 32-byte ed25519 seed
 	EpochKeySeed []byte // 32-byte ed25519 seed
+	// GrantKeyID and EpochKeyID name the keys (audit L3). They default to
+	// DefaultGrantKeyID and DefaultEpochKeyID; rotating a seed means giving
+	// it a new id, so material signed under the old key still verifies
+	// with the old public key.
+	GrantKeyID string
+	EpochKeyID string
 
 	ApproverDefault string // defaults to "team-lead"
 
@@ -100,6 +106,9 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.DatabaseURL == "" {
 		return errors.New("database URL is required")
 	}
+	if err := cfg.validateSlack(); err != nil {
+		return err
+	}
 	if len(cfg.TokenSecret) < 32 {
 		return errors.New("token secret must be at least 32 bytes")
 	}
@@ -137,11 +146,11 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	grantSigner, grantPub, err := grant.NewSignerFromSeed("grant-1", cfg.GrantKeySeed)
+	grantSigner, grantPub, err := grant.NewSignerFromSeed(orDefault(cfg.GrantKeyID, DefaultGrantKeyID), cfg.GrantKeySeed)
 	if err != nil {
 		return fmt.Errorf("grant signer: %w", err)
 	}
-	epochSigner, _, err := seal.NewEd25519SignerFromSeed("epoch-1", cfg.EpochKeySeed)
+	epochSigner, _, err := seal.NewEd25519SignerFromSeed(orDefault(cfg.EpochKeyID, DefaultEpochKeyID), cfg.EpochKeySeed)
 	if err != nil {
 		return fmt.Errorf("epoch signer: %w", err)
 	}
@@ -223,7 +232,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	srv := &server.Server{
 		Pool: pool, Orchestrator: orch, Approvals: approvals, Coordinator: coordinator,
-		GrantKeyID: grantSigner.KeyID(), GrantPublicKey: grantPub,
+		GrantKeyID: grantSigner.KeyID(), GrantPublicKey: grantPub, Logger: log,
 		SlackSigningSecret: cfg.SlackSigningSecret,
 		SlackApprovers:     cfg.SlackApprovers,
 		EpochKeyIDs:        []string{epochSigner.KeyID()},
@@ -251,6 +260,52 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	return nil
+}
+
+// The key ids every install has used so far. Changing a default would
+// orphan existing epochs and enrolled gateways, so new ids come from
+// configuration only.
+const (
+	DefaultGrantKeyID = "grant-1"
+	DefaultEpochKeyID = "epoch-1"
+)
+
+func orDefault(v, def string) string {
+	if v != "" {
+		return v
+	}
+	return def
+}
+
+// validateSlack refuses a half-configured Slack setup at startup (audit
+// L4). A bot token without a channel posts nowhere, and one without the
+// signing secret posts buttons nobody can click: either way approvals
+// would sit pending until they expire, with nothing to say why.
+func (cfg Config) validateSlack() error {
+	set := map[string]bool{
+		"slack_bot_token":      cfg.SlackBotToken != "",
+		"slack_signing_secret": cfg.SlackSigningSecret != "",
+		"slack_channel":        cfg.SlackChannel != "",
+	}
+	var have, missing []string
+	for _, name := range []string{"slack_bot_token", "slack_signing_secret", "slack_channel"} {
+		if set[name] {
+			have = append(have, name)
+		} else {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if len(have) == 0 {
+		if len(cfg.SlackApprovers) > 0 {
+			return errors.New("slack_approvers is set but Slack approvals are not configured (set slack_bot_token, slack_signing_secret and slack_channel)")
+		}
+		return nil
+	}
+	return fmt.Errorf("slack approvals are half-configured: %s set but %s missing (set all three, or none)",
+		strings.Join(have, ", "), strings.Join(missing, ", "))
 }
 
 // SplitList parses a comma-separated setting (such as AG_SLACK_APPROVERS)

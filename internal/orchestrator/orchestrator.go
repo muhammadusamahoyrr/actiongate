@@ -26,6 +26,11 @@ import (
 	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
+// ErrPolicyFailed: the policy could not be evaluated, so the action was
+// refused (fail closed). Its details are for the operator's log, not for
+// the agent that sent the request.
+var ErrPolicyFailed = errors.New("policy evaluation failed (fail closed)")
+
 type Orchestrator struct {
 	Pool        *pgxpool.Pool
 	Engine      *policy.Engine
@@ -116,7 +121,7 @@ func (o *Orchestrator) Submit(ctx context.Context, in SubmitInput) (SubmitResult
 	if err != nil {
 		// Fail closed (plan §16): an erroring policy rejects the call; the
 		// action stays Created and the error is surfaced, never bypassed.
-		return SubmitResult{}, fmt.Errorf("policy evaluation failed closed: %w", err)
+		return SubmitResult{}, fmt.Errorf("%w: %w", ErrPolicyFailed, err)
 	}
 
 	traceJSON, err := json.Marshal(decision.Trace)
@@ -238,7 +243,7 @@ func (o *Orchestrator) activeSnapshot(ctx context.Context, tenantID uuid.UUID) (
 		  where tenant_id = $1 order by version desc limit 1`,
 		tenantID).Scan(&version, &content)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, 0, fmt.Errorf("tenant %s has no configuration snapshot (fail closed)", tenantID)
+		return nil, 0, fmt.Errorf("%w: tenant %s has no configuration snapshot", ErrPolicyFailed, tenantID)
 	}
 	if err != nil {
 		return nil, 0, fmt.Errorf("load snapshot: %w", err)
@@ -258,7 +263,7 @@ func (o *Orchestrator) activeSnapshot(ctx context.Context, tenantID uuid.UUID) (
 	}
 	compiled, err := o.Engine.Compile(cfg)
 	if err != nil {
-		return nil, 0, fmt.Errorf("snapshot %d rejected at load (fail closed): %w", version, err)
+		return nil, 0, fmt.Errorf("%w: snapshot %d rejected at load: %w", ErrPolicyFailed, version, err)
 	}
 	o.mu.Lock()
 	if o.compiled == nil {

@@ -534,9 +534,10 @@ the signed outcome receipt.
 | `AG_TOKEN_SECRET` | yes (≥ 32 bytes) | HMAC secret for approval callback tokens |
 | `AG_LISTEN` | no (`127.0.0.1:8091`) | Control plane listen address. Loopback by default: it serves plain HTTP with an unauthenticated enrollment and approval callback. A host-less `:PORT` is narrowed to `127.0.0.1`; to listen on the network name the host (`0.0.0.0:8091`) and put TLS in front |
 | `AG_GRANT_KEY_SEED` / `AG_EPOCH_KEY_SEED` | recommended | Base64 32-byte signing seeds; ephemeral (with a loud warning) if unset |
+| `AG_GRANT_KEY_ID` / `AG_EPOCH_KEY_ID` | no (`grant-1` / `epoch-1`) | Names of the signing keys. When you rotate a seed, give it a new id: epochs sealed under the old key still verify with `verify -key <old-id>=<old-pub> -key <new-id>=<new-pub>`. A new grant key means re-enrolling gateways. In `dev.json`: `grant_key_id` / `epoch_key_id` |
 | `AG_APPROVER_DEFAULT` | no (`team-lead`) | Default approver target |
-| `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals |
-| `AG_SLACK_APPROVERS` | no | comma-separated Slack user ids allowed to approve (default: anyone in the channel) |
+| `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals. Set all three or none: the control plane refuses to start with only some, since approvals would otherwise sit unanswerable |
+| `AG_SLACK_APPROVERS` | no | comma-separated Slack user ids allowed to approve (default: anyone in the channel). Needs the three Slack settings above |
 
 ### Files on disk
 

@@ -67,6 +67,8 @@ func run() error {
 		TokenSecret:        k.String("token_secret"),
 		GrantKeySeed:       grantSeed,
 		EpochKeySeed:       epochSeed,
+		GrantKeyID:         k.String("grant_key_id"),
+		EpochKeyID:         k.String("epoch_key_id"),
 		ApproverDefault:    k.String("approver_default"),
 		SlackBotToken:      k.String("slack_bot_token"),
 		SlackSigningSecret: k.String("slack_signing_secret"),
