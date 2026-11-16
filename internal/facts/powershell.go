@@ -40,6 +40,11 @@ func psStatement(stmt string, depth int, st *psTamperState) Facts {
 	if strings.Contains(lower, "[scriptblock]::create") {
 		f.opaque("PowerShell script block built at run time")
 	}
+	// .NET directory deletion ([IO.Directory]::Delete(p, $true), the
+	// FileSystem.DeleteDirectory VB helper) bypasses Remove-Item.
+	if strings.Contains(lower, "directory]::delete(") || strings.Contains(lower, "deletedirectory(") {
+		f.destructive(".NET deletes a directory")
+	}
 	toks := psTokens(stmt)
 	recurse := false
 	for _, t := range toks {

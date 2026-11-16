@@ -83,7 +83,7 @@ func shellDepth(cmd string, depth int, o Options) Facts {
 	f.merge(a.f)
 	if a.sawDB {
 		for _, t := range a.texts {
-			if destructiveSQL.MatchString(t) {
+			if destructiveSQL.MatchString(t) || destructiveSQLStatement(t) {
 				f.destructive("destructive SQL sent to a database client")
 				break
 			}
@@ -294,6 +294,17 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 		if hasShortOrLong(rest, "rR", "--recursive") && (!a.opts.ExemptRegenerable || !allRegenerable(rest)) {
 			a.f.destructive("recursive delete (rm)")
 		}
+		// rm * / rm -f dir/*: every file in a directory at once.
+		for _, x := range rest {
+			if t := x.text; t == "*" || t == ".*" || strings.HasSuffix(t, "/*") || strings.HasSuffix(t, "/.*") {
+				a.f.destructive("rm deletes every file in a directory (" + t + ")")
+				break
+			}
+		}
+	case name == "chmod" || name == "chown" || name == "chgrp":
+		if r := permDestructive(name, rest); r != "" {
+			a.f.destructive(r)
+		}
 	case name == "find":
 		for i := 0; i < len(rest); i++ {
 			x := rest[i]
@@ -368,10 +379,16 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 		a.f.destructive(name + " destroys data")
 	case name == "rimraf":
 		a.f.destructive("recursive delete (rimraf)")
-	case name == "docker" || name == "podman":
+	case name == "docker" || name == "podman" || name == "docker-compose" || name == "podman-compose":
 		t := texts(rest)
 		if contains(t, "prune") && (contains(t, "volume") || contains(t, "system")) || contains(t, "volume") && contains(t, "rm") {
 			a.f.destructive("deletes container volumes")
+		}
+		// docker compose down -v / --volumes / --rmi all: deletes the
+		// project's named volumes (its data).
+		if (contains(t, "compose") || strings.HasSuffix(name, "compose")) && contains(t, "down") &&
+			(contains(t, "-v") || contains(t, "--volumes") || contains(t, "--rmi")) {
+			a.f.destructive("compose down deletes the project's volumes")
 		}
 	case name == "kubectl" || name == "oc":
 		// The verb is the first positional word, after options that take a
@@ -388,6 +405,15 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 		t := texts(rest)
 		if contains(t, "s3") && (contains(t, "rm") && contains(t, "--recursive") || contains(t, "rb") && contains(t, "--force")) {
 			a.f.destructive("bulk S3 delete")
+		}
+		// Every service names destruction delete-*/terminate-*/remove-*
+		// (ec2 terminate-instances, rds delete-db-cluster, cloudformation
+		// delete-stack, dynamodb delete-table, ...).
+		for _, w := range t {
+			if strings.HasPrefix(w, "delete-") || strings.HasPrefix(w, "terminate-") || strings.HasPrefix(w, "remove-") || w == "deregister-image" {
+				a.f.destructive("aws " + w + " destroys cloud resources")
+				break
+			}
 		}
 	case dbClients[name]:
 		a.sawDB = true
@@ -644,6 +670,49 @@ func operands(name string, rest []arg) []arg {
 	}
 	return rest
 }
+
+// permDestructive: a recursive chmod/chown/chgrp over a broad target (/, ~,
+// $HOME, system directories), or a recursive chmod that strips every
+// permission (000, a-rwx), locks a user out of their own data.
+func permDestructive(name string, rest []arg) string {
+	if !hasShortOrLong(rest, "R", "--recursive") {
+		return ""
+	}
+	broad := set("/", "~", "~/", "/*", "~/*", "$HOME", "${HOME}", "/home", "/etc", "/usr", "/var", "/bin", "/lib", "/opt", "/root", "/Users", "C:", `C:\`, "C:/")
+	for _, x := range rest {
+		t := x.text
+		if strings.HasPrefix(t, "-") {
+			continue
+		}
+		if broad[strings.TrimRight(t, "/")] || broad[t] {
+			return name + " -R over " + t
+		}
+		if name == "chmod" {
+			switch strings.TrimLeft(t, "0") {
+			case "", "a-rwx", "ugo-rwx", "a=", "ugo=":
+				return "chmod -R " + t + " removes every permission"
+			}
+		}
+	}
+	return ""
+}
+
+// destructiveSQLStatement catches what the regex misses: an UPDATE with
+// no WHERE clause, and a DELETE whose WHERE is always true.
+func destructiveSQLStatement(text string) bool {
+	for _, stmt := range strings.Split(text, ";") {
+		s := strings.ToLower(strings.Join(strings.Fields(stmt), " "))
+		switch {
+		case strings.HasPrefix(s, "update ") && strings.Contains(s, " set ") && !strings.Contains(s, " where "):
+			return true
+		case strings.HasPrefix(s, "delete from ") && trivialWhere.MatchString(s):
+			return true
+		}
+	}
+	return false
+}
+
+var trivialWhere = regexp.MustCompile(`\bwhere\s+(true|1|1\s*=\s*1|'1'\s*=\s*'1'|1\s*<>\s*0|not\s+false)\s*$`)
 
 // kubeVerb is kubectl's verb: the first positional word, skipping global
 // options and their values.
