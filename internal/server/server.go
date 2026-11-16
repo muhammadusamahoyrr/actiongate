@@ -447,9 +447,7 @@ func (s *Server) handleApprovalCallback(w http.ResponseWriter, r *http.Request) 
 // streamFor gives each tenant one default audit stream in V1: a stable
 // UUIDv5 of the tenant id, so every component derives the same stream
 // without coordination.
-func streamFor(tenantID uuid.UUID) uuid.UUID {
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("actiongate-stream:"+tenantID.String()))
-}
+func streamFor(tenantID uuid.UUID) uuid.UUID { return domain.StreamFor(tenantID) }
 
 func stateEnum(s domain.State) actiongatev1.ActionState {
 	switch s {

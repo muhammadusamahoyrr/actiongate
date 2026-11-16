@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -11,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/auditenc"
+	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
+	"github.com/muhammadusamahoyrr/actiongate/internal/fingerprint"
 )
 
 // Report is the outcome of an independent chain verification. OK means every
@@ -21,7 +25,31 @@ type Report struct {
 	Epochs       int
 	EventsSealed int
 	UnsealedTail int
-	Problems     []string
+	// RequestsChecked counts sealed ActionCreated events whose recorded
+	// request fingerprint was re-derived from the stored request (audit
+	// H7). Events written before the fingerprint was recorded are skipped.
+	RequestsChecked int
+	// Head is the last sealed epoch, nil when nothing is sealed yet. Saved
+	// somewhere the database cannot reach (verify -checkpoint), it lets a
+	// later run detect a chain cut back below it (audit H8).
+	Head     *Head
+	Problems []string
+
+	heads map[uint64]string // last_sequence -> root hash (hex) of every epoch
+}
+
+// Head identifies one point of a sealed chain: an epoch's last sequence
+// and its signed root hash.
+type Head struct {
+	LastSequence uint64 `json:"last_sequence"`
+	RootHash     string `json:"root_hash"` // hex
+}
+
+// Contains reports whether the verified chain still has an epoch ending at
+// h with the same root, that is, whether h is still part of its history.
+func (r Report) Contains(h Head) bool {
+	root, ok := r.heads[h.LastSequence]
+	return ok && root == h.RootHash
 }
 
 func (r Report) OK() bool { return len(r.Problems) == 0 }
@@ -31,7 +59,7 @@ func (r Report) OK() bool { return len(r.Problems) == 0 }
 // sequence contiguity, per-event hashes, epoch roots, epoch linkage, and
 // signatures are all recomputed.
 func Verify(ctx context.Context, pool *pgxpool.Pool, tenantID, streamID uuid.UUID, publicKeys map[string]ed25519.PublicKey) (Report, error) {
-	var report Report
+	report := Report{heads: map[uint64]string{}}
 	problem := func(format string, args ...any) {
 		report.Problems = append(report.Problems, fmt.Sprintf(format, args...))
 	}
@@ -158,6 +186,28 @@ func Verify(ctx context.Context, pool *pgxpool.Pool, tenantID, streamID uuid.UUI
 		}
 		prevRoot = e.RootHash
 		prevLastSeq = e.LastSequence
+		root := hex.EncodeToString(e.RootHash)
+		report.heads[e.LastSequence] = root
+		report.Head = &Head{LastSequence: e.LastSequence, RootHash: root}
+	}
+
+	// Audit H8: an event that was sealed points at its epoch. If that epoch
+	// row is gone, epochs were deleted to cut the chain back.
+	var orphaned int
+	if err := pool.QueryRow(ctx,
+		`select count(*) from audit_events e
+		  where e.tenant_id = $1 and e.stream_id = $2 and e.epoch_id is not null
+		    and not exists (select 1 from audit_epochs p
+		                     where p.epoch_id = e.epoch_id and p.tenant_id = $1 and p.stream_id = $2)`,
+		tenantID, streamID).Scan(&orphaned); err != nil {
+		return report, fmt.Errorf("count orphaned events: %w", err)
+	}
+	if orphaned > 0 {
+		problem("%d sealed events belong to no epoch: epochs were deleted (chain truncated)", orphaned)
+	}
+
+	if err := verifyRequests(ctx, pool, tenantID, streamID, &report, problem); err != nil {
+		return report, err
 	}
 
 	if err := pool.QueryRow(ctx,
@@ -167,4 +217,68 @@ func Verify(ctx context.Context, pool *pgxpool.Pool, tenantID, streamID uuid.UUI
 		return report, fmt.Errorf("count unsealed tail: %w", err)
 	}
 	return report, nil
+}
+
+// verifyRequests re-derives each sealed ActionCreated event's request
+// fingerprint from the stored action request (audit H7). The event's
+// metadata is covered by the chain, so a stored request whose agent, tool
+// or params were changed after the fact no longer matches it.
+func verifyRequests(ctx context.Context, pool *pgxpool.Pool, tenantID, streamID uuid.UUID, report *Report, problem func(string, ...any)) error {
+	rows, err := pool.Query(ctx,
+		`select e.id, e.metadata->>'request_fingerprint', a.id, a.agent_id, a.tool_name,
+		        a.tool_params::text, a.request_fingerprint
+		   from audit_events e
+		   left join action_requests a on a.id = e.action_request_id
+		  where e.tenant_id = $1 and e.stream_id = $2 and e.event_type = $3
+		    and e.epoch_id is not null
+		    and e.metadata->>'request_fingerprint' is not null`,
+		tenantID, streamID, string(domain.EventActionCreated))
+	if err != nil {
+		return fmt.Errorf("load action requests: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eventID uuid.UUID
+		var sealedHex string
+		var actionID *uuid.UUID
+		var agentID, toolName, params *string
+		var storedFP []byte
+		if err := rows.Scan(&eventID, &sealedHex, &actionID, &agentID, &toolName, &params, &storedFP); err != nil {
+			return fmt.Errorf("scan action request: %w", err)
+		}
+		report.RequestsChecked++
+		if actionID == nil {
+			problem("event %s: its action request is missing", eventID)
+			continue
+		}
+		canonical, err := canonicalJSON([]byte(*params))
+		if err != nil {
+			problem("action %s: stored params are not valid JSON: %v", *actionID, err)
+			continue
+		}
+		derived, err := fingerprint.Fingerprint(*agentID, *toolName, canonical)
+		if err != nil {
+			return err
+		}
+		if hex.EncodeToString(derived) != sealedHex {
+			problem("action %s: stored request does not match its sealed fingerprint (agent, tool or params changed)", *actionID)
+		} else if !bytes.Equal(derived, storedFP) {
+			problem("action %s: request_fingerprint column does not match the request", *actionID)
+		}
+	}
+	return rows.Err()
+}
+
+// canonicalJSON re-encodes params the way the control plane did before
+// fingerprinting: decoded into Go values (numbers as float64) and
+// re-marshalled with sorted keys.
+func canonicalJSON(raw []byte) ([]byte, error) {
+	var v map[string]any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	if v == nil {
+		v = map[string]any{}
+	}
+	return json.Marshal(v)
 }
