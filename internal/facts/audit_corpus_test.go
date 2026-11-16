@@ -104,6 +104,11 @@ func TestAuditBypassCorpus(t *testing.T) {
 		{"awk cluster -bf", "Bash", `awk -bf prog.awk data`, gated},
 		{"awk -Wsource=", "Bash", `gawk -Wsource='BEGIN{system("rm -rf ~")}'`, destructive},
 		{"awk -W exec FILE", "Bash", `gawk -W exec prog.awk`, gated},
+		{"awk -W computed", "Bash", `gawk -W "$OPT" 'BEGIN{}'`, gated},
+		{"ssh quoted keyword", "Bash", `ssh -o '"ProxyCommand" rm -rf ~' host`, destructive},
+		{"ssh -F config", "Bash", `ssh -F ./cfg host`, gated},
+		{"ssh -I library", "Bash", `ssh -I ./lib.so host`, gated},
+		{"ssh XAuthLocation", "Bash", `ssh -o XAuthLocation=./x host`, gated},
 
 		// H3: secret reads.
 		{"ln then cat", "Bash", `ln -s .env notes.txt && cat notes.txt`, secret},

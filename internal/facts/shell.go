@@ -846,8 +846,13 @@ func (a *shellAnalyzer) remoteCommand(rest []arg) {
 				if v == "" && i+1 < len(rest) {
 					v, vLit, next = rest[i+1].text, rest[i+1].lit, i+2
 				}
-				if t[j] == 'o' {
+				switch t[j] {
+				case 'o':
 					a.sshOption(v, vLit)
+				case 'F', 'I':
+					// -F config file (may hold ProxyCommand), -I PKCS#11
+					// library: the -o Include / PKCS11Provider equivalents.
+					a.f.opaque("ssh -" + string(t[j]) + " loads config or a library the analyzer cannot see")
 				}
 				i = next - 1
 				break
@@ -886,9 +891,14 @@ func (a *shellAnalyzer) sshOption(opt string, lit bool) {
 	if cut < 0 {
 		return
 	}
-	key := strings.ToLower(opt[:cut])
+	// OpenSSH strips double quotes around the keyword and the value.
+	key := strings.ToLower(strings.Trim(opt[:cut], `"`))
 	val := strings.TrimSpace(opt[cut:])
-	val = strings.TrimSpace(strings.TrimPrefix(val, "="))
+	val = strings.Trim(strings.TrimSpace(strings.TrimPrefix(val, "=")), `"`)
+	if strings.ContainsAny(key, `"'\`) {
+		a.f.opaque("ssh -o keyword the analyzer cannot read: " + key)
+		return
+	}
 	if val == "" || strings.EqualFold(val, "none") {
 		return
 	}
@@ -902,9 +912,10 @@ func (a *shellAnalyzer) sshOption(opt string, lit bool) {
 		if i := strings.Index(strings.ToLower(val), "exec"); i >= 0 {
 			a.f.merge(shellDepth(strings.Trim(strings.TrimSpace(val[i+4:]), `"`), a.depth+1, a.opts))
 		}
-	case "pkcs11provider", "securitykeyprovider", "include":
-		// Loads a library or pulls in more config (which may hold a
-		// ProxyCommand): what runs is decided elsewhere.
+	case "pkcs11provider", "securitykeyprovider", "include", "xauthlocation":
+		// Loads a library, pulls in more config (which may hold a
+		// ProxyCommand) or names a program ssh runs: what runs is decided
+		// elsewhere.
 		a.f.opaque("ssh -o " + key + " loads code or config the analyzer cannot see")
 	}
 }
@@ -969,6 +980,10 @@ func (a *shellAnalyzer) awk(rest []arg) {
 				case 'v', 'F':
 				case 'W':
 					// -W source=..., -W exec FILE: gawk's spelling of long options.
+					if !valueLit {
+						a.f.opaque("awk option built at run time")
+						return
+					}
 					var after *arg
 					if used && i+2 < len(rest) {
 						after = &rest[i+2]
