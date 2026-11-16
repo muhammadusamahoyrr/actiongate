@@ -13,6 +13,7 @@ package facts
 
 import (
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -42,6 +43,12 @@ type Facts struct {
 	// files). Implies SecretAccess. The policy engine denies it before any
 	// pack rule runs (see internal/policy), so no pack can allow it.
 	SelfSecret bool
+	// SelfApproval: the action would resolve a pending approval — the
+	// local approvals CLI (actiongate approvals approve|deny) or the
+	// /approval/callback endpoint. An agent approving its own held action
+	// would void the whole approval step, so the engine denies it before
+	// any pack rule. Matched on the text, deliberately broadly.
+	SelfApproval bool
 	// Reasons explains each fact that is true, for the audit trail.
 	Reasons []string
 }
@@ -71,6 +78,7 @@ func (f Facts) Map() map[string]bool {
 		"inline_dynamic": f.InlineDynamic,
 		"self_tamper":    f.SelfTamper,
 		"self_secret":    f.SelfSecret,
+		"self_approval":  f.SelfApproval,
 	}
 }
 
@@ -121,6 +129,7 @@ func (f *Facts) merge(o Facts) {
 	f.InlineDynamic = f.InlineDynamic || o.InlineDynamic
 	f.SelfTamper = f.SelfTamper || o.SelfTamper
 	f.SelfSecret = f.SelfSecret || o.SelfSecret
+	f.SelfApproval = f.SelfApproval || o.SelfApproval
 	for _, r := range o.Reasons {
 		f.add(r)
 	}
@@ -217,11 +226,34 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 	if _, ok := params[ScriptsKey]; ok {
 		f.merge(deriveScripts(params, o))
 	}
+	// Only what executes can approve: commands, scripts they run (their
+	// attached text is scanned too), other tools' requests. Writing or
+	// reading a file that merely mentions the endpoint (docs, this repo's
+	// own tests) is not an approval.
+	if !fileTools[tool] {
+		if _, ok := findString(params, 0, approvesSomething); ok {
+			f.SelfApproval = true
+			f.add("would resolve a pending approval (approvals CLI or /approval/callback)")
+		}
+	}
 	if f.SecretAccess && mentionsActiongateSecret(params) {
 		f.SelfSecret = true
 		f.add("reads actiongate's own secrets (its config directory)")
 	}
 	return f
+}
+
+var fileTools = set("Read", "Edit", "MultiEdit", "Write", "NotebookEdit", "Grep", "Glob", "LS", "read_file")
+
+var approvalsCLI = regexp.MustCompile(`(?i)actiongate(\.exe)?["']?\s+(-\S+\s+)*approvals?\s+(-\S+\s+)*(approve|deny|resolve)\b`)
+
+// approvesSomething: s would resolve a pending approval. Text match, on
+// purpose broad (it can only add a deny); a spelling it misses still meets
+// the CLI's own refusal to run without an interactive terminal.
+func approvesSomething(s string) bool {
+	l := strings.ToLower(s)
+	return strings.Contains(l, "/approval/callback") || strings.Contains(l, "/slack/interaction") ||
+		approvalsCLI.MatchString(s)
 }
 
 // findString returns the first string anywhere in v (maps, slices, nested)

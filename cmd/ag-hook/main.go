@@ -284,7 +284,9 @@ func main() {
 		}
 		block(fmt.Sprintf("🛑 actiongate blocked this action: %s (rule %q)", reason, res.RuleID))
 	case 3:
-		block("⏳ actiongate: approval timed out — the action was not executed")
+		block("⏳ actiongate: approval timed out — the action was not executed. " +
+			"A human can approve held actions in Slack, or in a terminal with `actiongate approvals` " +
+			"(the agent cannot approve its own).")
 	default:
 		block(fmt.Sprintf("actiongate: unexpected check exit %d; failing closed. %s", code, stderr.String()))
 	}

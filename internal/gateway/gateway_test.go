@@ -195,8 +195,12 @@ func approveViaCallback(t *testing.T, stack *servertest.Stack, nativeRequestID s
 	if err := json.Unmarshal(raw, &delivered); err != nil {
 		t.Fatalf("delivery args: %v", err)
 	}
+	token, err := stack.CallbackToken(delivered.TenantID, delivered.ApprovalRequestID)
+	if err != nil {
+		t.Fatalf("derive callback token: %v", err)
+	}
 	body, _ := json.Marshal(map[string]string{
-		"token": delivered.CallbackToken, "decision": "approved",
+		"token": token, "decision": "approved",
 		"approver_id": "alice", "reason": "test",
 	})
 	resp, err := http.Post(stack.BaseURL+"/approval/callback", "application/json", bytes.NewReader(body))

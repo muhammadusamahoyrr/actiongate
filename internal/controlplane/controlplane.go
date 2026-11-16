@@ -172,9 +172,16 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		log.Info("slack notifications enabled", "default_channel", cfg.SlackChannel)
 	}
-	workers, err := queue.NewWorkers(pool, port)
+	workers, err := queue.NewWorkers(pool, port, approvals.CallbackToken)
 	if err != nil {
 		return fmt.Errorf("workers: %w", err)
+	}
+	// Older builds put the raw callback token in delivery job args; River
+	// retains finished jobs, so strip it from those (audit C5).
+	if n, err := queue.ScrubLegacyCallbackTokens(ctx, pool); err != nil {
+		log.Warn("could not scrub legacy callback tokens from finished jobs", "err", err)
+	} else if n > 0 {
+		log.Info("scrubbed legacy callback tokens from finished delivery jobs", "jobs", n)
 	}
 	if err := execution.RegisterWorker(workers, coordinator); err != nil {
 		return fmt.Errorf("authorize worker: %w", err)

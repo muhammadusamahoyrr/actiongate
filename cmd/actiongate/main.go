@@ -33,6 +33,8 @@ func run(args []string) int {
 		return cmdTamperDemo(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:])
+	case "approvals":
+		return cmdApprovals(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -52,6 +54,9 @@ func usage() {
   protect claude-code    install the actiongate PreToolUse hook into a
                          project's Claude Code settings and apply a policy
                          pack (-pack claude-code|paranoid|relaxed)
+  approvals [list]       show actions waiting for a human, with what they run
+  approvals approve <id> approve one (interactive terminal only; deny <id>
+                         rejects it). Works without Slack
   service <verb>         run the control plane as a Windows service so it
                          survives reboots: install|uninstall|start|stop|
                          status|run (install/uninstall need an elevated
