@@ -254,31 +254,16 @@ func (a *shellAnalyzer) call(c *syntax.CallExpr, in stdinSource) {
 
 // command classifies one simple command after wrappers are stripped.
 func (a *shellAnalyzer) command(args []arg, in stdinSource) {
-	// env -S 'rm -rf ~' splits its value into a whole command line.
-	if len(args) > 1 && args[0].lit && cmdName(args[0].text) == "env" {
+	// flock [opts] FILE -c 'cmd' runs cmd through a shell.
+	if len(args) > 1 && args[0].lit && cmdName(args[0].text) == "flock" {
 		for i := 1; i < len(args); i++ {
-			t := args[i].text
-			v, hasV := "", false
-			switch {
-			case t == "-S" || t == "--split-string":
-				if i+1 < len(args) {
-					v, hasV, i = args[i+1].text, true, i+1
+			if (args[i].text == "-c" || args[i].text == "--command") && i+1 < len(args) {
+				if !args[i+1].lit {
+					a.f.opaque("flock -c with code built at run time")
+				} else {
+					a.f.merge(shellDepth(args[i+1].text, a.depth+1, a.opts))
 				}
-			case strings.HasPrefix(t, "-S") && len(t) > 2:
-				v, hasV = t[2:], true
-			case strings.HasPrefix(t, "--split-string="):
-				v, hasV = strings.TrimPrefix(t, "--split-string="), true
-			}
-			if hasV {
-				code := v
-				if tail, ok := joinLiteral(args[i+1:]); ok {
-					code += " " + tail
-				}
-				a.f.merge(shellDepth(code, a.depth+1, a.opts))
 				return
-			}
-			if !strings.HasPrefix(t, "-") && !strings.Contains(t, "=") {
-				break
 			}
 		}
 	}
@@ -360,17 +345,7 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 			}
 		}
 	case name == "su" || name == "runuser":
-		// su -c 'cmd' [user]: a shell runs cmd.
-		for i, x := range rest {
-			if (x.text == "-c" || x.text == "--command") && i+1 < len(rest) {
-				if !rest[i+1].lit {
-					a.f.opaque(name + " -c with code built at run time")
-				} else {
-					a.f.merge(shellDepth(rest[i+1].text, a.depth+1, a.opts))
-				}
-				break
-			}
-		}
+		a.switchUser(name, rest)
 	case name == "ssh":
 		a.remoteCommand(rest)
 	case name == "awk" || name == "gawk" || name == "mawk" || name == "nawk":
@@ -566,12 +541,20 @@ func (a *shellAnalyzer) nestedShell(rest []arg, in stdinSource) {
 
 // interpreterOpts: which short option letters take inline code as their
 // value, and which take some other value as the next word.
-var interpreterOpts = map[string]struct{ codeLetters, valueLetters string }{
+// valueLetters take the NEXT word as their value when nothing is attached;
+// letters missing from it take only an attached value (perl -MFoo, -x)
+// and so never swallow a word. codeNextWord: the code letters never take
+// an attached value (node -pe is -p -e, code in the next word). fileLetters
+// read the program from a file: opaque.
+var interpreterOpts = map[string]struct {
+	codeLetters, valueLetters, fileLetters string
+	codeNextWord                           bool
+}{
 	"python": {codeLetters: "c", valueLetters: "WXQ"},
-	"node":   {codeLetters: "ep", valueLetters: "r"},
-	"perl":   {codeLetters: "eE", valueLetters: "IMmx"},
-	"ruby":   {codeLetters: "e", valueLetters: "IrECxF"},
-	"php":    {codeLetters: "r", valueLetters: "dcz"},
+	"node":   {codeLetters: "ep", valueLetters: "r", codeNextWord: true},
+	"perl":   {codeLetters: "eE", valueLetters: "I"},
+	"ruby":   {codeLetters: "e", valueLetters: "IrCE"},
+	"php":    {codeLetters: "rBRE", valueLetters: "dcz", fileLetters: "F"},
 	"other":  {codeLetters: "ce", valueLetters: ""},
 }
 
@@ -616,7 +599,17 @@ func (a *shellAnalyzer) interpreter(name string, rest []arg, in stdinSource) {
 			// python3 -Bc '...', perl -we '...', python3 -W ignore -c '...'.
 			for j, r := range x.text[1:] {
 				attached := x.text[2+j:]
+				if strings.ContainsRune(opts.fileLetters, r) {
+					a.f.opaque(name + " runs a program from a file")
+					return
+				}
 				if strings.ContainsRune(opts.codeLetters, r) {
+					if opts.codeNextWord {
+						// node -pe 'code': every letter is a flag; the code
+						// is the next word.
+						runCode(i + 1)
+						return
+					}
 					if attached != "" {
 						if !x.lit {
 							a.f.opaque(name + " runs code built at run time")
@@ -758,6 +751,46 @@ func destructiveSQLStatement(text string) bool {
 
 var trivialWhere = regexp.MustCompile(`\bwhere\s+(true|1|1\s*=\s*1|'1'\s*=\s*'1'|1\s*<>\s*0|not\s+false)\s*$`)
 
+// switchUser judges what su/runuser run: -c CMD (also in a cluster, -lc
+// CMD, or --command=CMD / --session-command), or for runuser -u USER [--]
+// CMD the command itself.
+func (a *shellAnalyzer) switchUser(name string, rest []arg) {
+	code := func(v string, lit bool) {
+		if !lit {
+			a.f.opaque(name + " -c with code built at run time")
+			return
+		}
+		a.f.merge(shellDepth(v, a.depth+1, a.opts))
+	}
+	for i := 0; i < len(rest); i++ {
+		t := rest[i].text
+		switch {
+		case t == "-c" || t == "--command" || t == "--session-command" || isShortCluster(t) && strings.HasSuffix(t, "c"):
+			if i+1 < len(rest) {
+				code(rest[i+1].text, rest[i+1].lit)
+			}
+			return
+		case strings.HasPrefix(t, "--command=") || strings.HasPrefix(t, "--session-command="):
+			_, v, _ := strings.Cut(t, "=")
+			code(v, rest[i].lit)
+			return
+		case name == "runuser" && (t == "-u" || t == "--user" || t == "-g" || t == "--group" || t == "-G"):
+			i++
+		case name == "runuser" && t == "--":
+			if i+1 < len(rest) {
+				a.command(rest[i+1:], stdinSource{})
+			}
+			return
+		case strings.HasPrefix(t, "-"):
+		case name == "runuser" && hasShortOrLong(rest[:i], "u", "--user"):
+			// runuser -u USER CMD ...: the first positional after the user
+			// is the command.
+			a.command(rest[i:], stdinSource{})
+			return
+		}
+	}
+}
+
 // kubeVerb is kubectl's verb: the first positional word, skipping global
 // options and their values.
 func kubeVerb(rest []arg) string {
@@ -808,48 +841,113 @@ func (a *shellAnalyzer) remoteCommand(rest []arg) {
 
 // awk can run shell commands: system("..."), print | "cmd", "cmd" | getline.
 func (a *shellAnalyzer) awk(rest []arg) {
-	var program string
+	var programs []string
+	positional := false
 	for i := 0; i < len(rest); i++ {
 		t := rest[i].text
 		switch {
-		case t == "-f" || t == "--file":
+		case t == "-f" || t == "--file" || strings.HasPrefix(t, "--file=") || t == "-i" || t == "--include":
 			a.f.opaque("awk runs a program from a file")
 			return
+		case t == "-e" || t == "--source":
+			if i+1 < len(rest) {
+				if !rest[i+1].lit {
+					a.f.opaque("awk program built at run time")
+					return
+				}
+				programs = append(programs, rest[i+1].text)
+				i++
+			}
+		case strings.HasPrefix(t, "--source="):
+			programs = append(programs, strings.TrimPrefix(t, "--source="))
 		case t == "-v" || t == "-F" || t == "--assign" || t == "--field-separator":
 			i++
 		case strings.HasPrefix(t, "-"):
 		default:
+			if len(programs) > 0 || positional {
+				i = len(rest) // operands: files
+				continue
+			}
 			if !rest[i].lit {
 				a.f.opaque("awk program built at run time")
 				return
 			}
-			program = t
-			i = len(rest)
+			programs = append(programs, t)
+			positional = true
 		}
 	}
-	if !strings.Contains(program, "system") && !strings.Contains(program, "|") {
-		return
-	}
-	if awkSystemComputed.MatchString(program) {
-		a.f.opaque("awk runs a shell command built at run time")
-	}
-	ran := false
-	for _, s := range stringLiterals(program) {
-		if strings.Contains(s, " ") {
-			a.f.merge(shellDepth(s, a.depth+1, a.opts))
-			ran = true
-		}
-	}
-	if !ran {
-		a.f.opaque("awk runs a shell command")
+	for _, p := range programs {
+		a.awkProgram(p)
 	}
 }
 
-var awkSystemComputed = regexp.MustCompile(`system\s*\(\s*[^"'\s]`)
+// awkProgram judges the shell commands an awk program runs. system(ARG)
+// counts as analyzed only when ARG is exactly one string literal; any
+// concatenation or expression (system("rm" " -rf ~")) is opaque, as is a
+// pipe to or from a command (print | "cmd", "cmd" | getline).
+func (a *shellAnalyzer) awkProgram(p string) {
+	for idx := strings.Index(p, "system"); idx >= 0; {
+		open := strings.IndexByte(p[idx:], '(')
+		if open < 0 || strings.TrimSpace(p[idx+len("system"):idx+open]) != "" {
+			break
+		}
+		argText, ok := balancedParen(p[idx+open:])
+		if !ok {
+			a.f.opaque("awk system() call not parsed")
+			return
+		}
+		lits := stringLiterals(argText)
+		if len(lits) == 1 && strings.TrimSpace(stringLit.ReplaceAllString(argText, "")) == "" {
+			a.f.merge(shellDepth(lits[0], a.depth+1, a.opts))
+		} else {
+			a.f.opaque("awk runs a shell command built at run time")
+		}
+		next := strings.Index(p[idx+1:], "system")
+		if next < 0 {
+			break
+		}
+		idx += 1 + next
+	}
+	// A pipe outside string literals that is not a logical || connects to
+	// a command.
+	if awkPipe.MatchString(stringLit.ReplaceAllString(p, `""`)) {
+		a.f.opaque("awk pipes to or from a shell command")
+	}
+}
+
+var awkPipe = regexp.MustCompile(`(^|[^|])\|&?([^|]|$)`)
+
+// balancedParen returns the text inside the parenthesis s starts with,
+// honouring string literals.
+func balancedParen(s string) (string, bool) {
+	depth, quote := 0, byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return s[1:i], true
+			}
+		}
+	}
+	return "", false
+}
 
 // sedExec: GNU sed's e command and s///e flag run shell commands.
 func (a *shellAnalyzer) sedExec(rest []arg) {
 	var scripts []string
+	explicit := false
 	for i := 0; i < len(rest); i++ {
 		t := rest[i].text
 		switch {
@@ -858,21 +956,46 @@ func (a *shellAnalyzer) sedExec(rest []arg) {
 				scripts = append(scripts, rest[i+1].text)
 				i++
 			}
-		case t == "-f" || t == "--file":
+			explicit = true
+		case strings.HasPrefix(t, "--expression="):
+			scripts = append(scripts, strings.TrimPrefix(t, "--expression="))
+			explicit = true
+		case t == "-f" || t == "--file" || strings.HasPrefix(t, "--file="):
 			a.f.opaque("sed runs a script from a file")
 			return
+		case isShortCluster(t):
+			// -ne 'script', -eSCRIPT, -nf file: options until one takes a value.
+			for j, r := range t[1:] {
+				if r == 'f' {
+					a.f.opaque("sed runs a script from a file")
+					return
+				}
+				if r == 'e' {
+					if v := t[2+j:]; v != "" {
+						scripts = append(scripts, v)
+					} else if i+1 < len(rest) {
+						scripts = append(scripts, rest[i+1].text)
+						i++
+					}
+					explicit = true
+					break
+				}
+				if r == 'l' || r == 'i' && j == len(t)-2 {
+					break // -l N, -i[SUFFIX]: the rest is a value
+				}
+			}
 		case strings.HasPrefix(t, "-"):
 		default:
-			if len(scripts) == 0 {
+			if !explicit && len(scripts) == 0 {
 				scripts = append(scripts, t)
 			}
 			i = len(rest)
 		}
 	}
 	for _, s := range scripts {
-		if m := sedECommand.FindStringSubmatch(s); m != nil {
+		if sedHasECommand(s) {
 			a.f.opaque("sed executes a shell command (e)")
-			if strings.TrimSpace(m[2]) != "" {
+			if m := sedECommand.FindStringSubmatch(s); m != nil && strings.TrimSpace(m[2]) != "" {
 				a.f.merge(shellDepth(m[2], a.depth+1, a.opts))
 			}
 		}
@@ -880,6 +1003,55 @@ func (a *shellAnalyzer) sedExec(rest []arg) {
 			a.f.opaque("sed executes the pattern space as a command (s///e)")
 		}
 	}
+}
+
+// sedHasECommand fails closed on an e command in command position: the
+// bodies of s/// and y/// and /regex/ addresses are blanked first (letters
+// inside them are not commands), then an e after any address form
+// (numbers, $, /re/, ranges, ~steps, !) or a separator counts.
+func sedHasECommand(script string) bool {
+	return sedEPosition.MatchString(blankSedBodies(script))
+}
+
+var sedEPosition = regexp.MustCompile(`(^|[;\n{}\s0-9$!~,/])e(\s|$|[;}\n])`)
+
+// blankSedBodies replaces the bodies of s and y commands and of /regex/
+// addresses with nothing, keeping the command structure.
+func blankSedBodies(script string) string {
+	var b strings.Builder
+	for i := 0; i < len(script); i++ {
+		c := script[i]
+		switch {
+		case (c == 's' || c == 'y') && i+1 < len(script) && !isWordByte(script[i+1]) && script[i+1] != ' ' &&
+			script[i+1] != '\n' && script[i+1] != '\\' && (i == 0 || !isWordByte(script[i-1])):
+			delim, parts, j := script[i+1], 0, i+2
+			for j < len(script) && parts < 2 {
+				switch script[j] {
+				case '\\':
+					j++
+				case delim:
+					parts++
+				}
+				j++
+			}
+			b.WriteByte(c)
+			b.WriteByte(';') // flags follow; the body is gone
+			i = j - 1
+		case c == '/':
+			j := i + 1
+			for j < len(script) && script[j] != '/' {
+				if script[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			b.WriteString("1") // an address
+			i = j
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 var sedECommand = regexp.MustCompile(`(^|[;\n{}]|^\s*\d+|/)\s*e(\s+([^;\n}]*))?($|[;\n}])`)
@@ -1090,9 +1262,17 @@ func unwrap(args []arg) []arg {
 		"xargs":   set("-n", "-I", "-L", "-P", "-d", "-E", "-s", "-a"),
 		"timeout": set("-s", "-k", "--signal", "--kill-after"),
 		"stdbuf":  {},
-		"env":     set("-u", "-C", "-S"),
+		"env":     set("-u", "-C", "--unset", "--chdir"),
 		"npx":     set("-p", "--package"),
+		"ionice":  set("-c", "-n", "-t", "--class", "--classdata"),
+		"chrt":    set("-T", "-P", "-D", "--sched-runtime", "--sched-period", "--sched-deadline"),
+		"flock":   set("-w", "-E", "--timeout", "--wait", "--conflict-exit-code"),
+		"taskset": {},
+		"runuser": set("-u", "-g", "-G", "--user", "--group", "--supp-group"),
 	}
+	// positionals a wrapper takes before the command: the duration, the
+	// lock file, the priority, the CPU mask.
+	positionals := map[string]int{"timeout": 1, "flock": 1, "chrt": 1, "taskset": 1}
 	for len(args) > 0 && args[0].lit {
 		name := cmdName(args[0].text)
 		switch name {
@@ -1105,6 +1285,17 @@ func unwrap(args []arg) []arg {
 		i := 1
 		for i < len(args) {
 			t := args[i].text
+			if t == "--" {
+				i++
+				break
+			}
+			if name == "env" {
+				// env -S 'cmd args': the value is split into a whole command
+				// line, also inside a cluster (-iS 'x') or attached (-S'x').
+				if v, consumed, ok := envSplitString(args, i); ok {
+					return append(splitCommandWords(v), args[i+consumed:]...)
+				}
+			}
 			if valueFlags[name][t] {
 				i += 2
 				continue
@@ -1115,12 +1306,69 @@ func unwrap(args []arg) []arg {
 			}
 			break
 		}
-		if name == "timeout" && i < len(args) {
-			i++ // the duration
+		// chrt/taskset -p act on an existing process: no command follows.
+		if (name == "chrt" || name == "taskset") && hasShortOrLong(args[1:i], "p", "--pid") {
+			return nil
+		}
+		if n := positionals[name]; n > 0 {
+			i += n
+		}
+		if i > len(args) {
+			i = len(args)
 		}
 		args = args[i:]
 	}
 	return args
+}
+
+// envSplitString recognises env's -S / --split-string at args[i] (alone,
+// attached, inside a short cluster, or with =) and returns its value and
+// how many words it used.
+func envSplitString(args []arg, i int) (string, int, bool) {
+	t := args[i].text
+	switch {
+	case t == "--split-string" || isLongPrefix(t, "--split-string") && !strings.Contains(t, "="):
+		if i+1 < len(args) {
+			return args[i+1].text, 2, true
+		}
+	case strings.HasPrefix(t, "--split-string=") || isLongPrefix(t, "--split-string"):
+		_, v, _ := strings.Cut(t, "=")
+		return v, 1, true
+	case isShortCluster(t):
+		for j, r := range t[1:] {
+			if r == 'S' {
+				if rest := t[2+j:]; rest != "" {
+					return rest, 1, true
+				}
+				if i+1 < len(args) {
+					return args[i+1].text, 2, true
+				}
+				return "", 1, true
+			}
+			if r == 'u' || r == 'C' {
+				break // these take a value: S cannot follow in this word
+			}
+		}
+	}
+	return "", 0, false
+}
+
+// splitCommandWords splits an env -S value into words the way a shell
+// would, for the words of one simple command. Anything the analyzer cannot
+// read that way becomes a single computed word, which is opaque.
+func splitCommandWords(s string) []arg {
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(s), "")
+	if err == nil && len(file.Stmts) == 1 {
+		if call, ok := file.Stmts[0].Cmd.(*syntax.CallExpr); ok && len(call.Assigns) == 0 {
+			out := make([]arg, 0, len(call.Args))
+			for _, w := range call.Args {
+				text, lit := literal(w)
+				out = append(out, arg{text: text, lit: lit})
+			}
+			return out
+		}
+	}
+	return []arg{{text: s, lit: false}}
 }
 
 // gitDestructive returns why a git invocation is destructive, or "".

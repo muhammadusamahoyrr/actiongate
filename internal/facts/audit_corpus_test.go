@@ -55,6 +55,32 @@ func TestAuditBypassCorpus(t *testing.T) {
 		{"chmod -R 000", "Bash", `chmod -R 000 ~`, destructive},
 		{"PowerShell Directory.Delete", "PowerShell", `[IO.Directory]::Delete('C:\data', $true)`, destructive},
 
+		// Found in review of the fixes above.
+		{"sudo env -S", "Bash", `sudo env -S 'rm -rf ~'`, destructive},
+		{"env -iS cluster", "Bash", `env -iS 'rm -rf ~'`, destructive},
+		{"env -u X -S", "Bash", `env -u HOME -S 'rm -rf ~'`, destructive},
+		{"env --split-string=", "Bash", `env --split-string='rm -rf ~'`, destructive},
+		{"perl -M then -e", "Bash", `perl -MPOSIX -e 'system("rm -rf /x")'`, destructive},
+		{"perl -x does not eat -e", "Bash", `perl -x -e 'system("rm -rf /x")'`, destructive},
+		{"node -pe", "Bash", `node -pe "require('child_process').execSync('rm -rf /x')"`, destructive},
+		{"php -B", "Bash", `php -B 'system("rm -rf /x");'`, destructive},
+		{"awk concatenation", "Bash", `awk 'BEGIN{system("rm" " -rf ~")}'`, gated},
+		{"awk pipe", "Bash", `awk 'BEGIN{print "x" | "sh"}'`, gated},
+		{"gawk --source", "Bash", `gawk --source 'BEGIN{system("rm -rf ~")}'`, destructive},
+		{"sed address 1e", "Bash", `sed '1e rm -rf /x' f`, gated},
+		{"sed range e", "Bash", `sed '/a/,/b/e id' f`, gated},
+		{"sed -ne cluster", "Bash", `sed -ne 'e rm -rf /x' f`, gated},
+		{"sed --expression=", "Bash", `sed --expression='e rm -rf /x' f`, gated},
+		{"su -lc cluster", "Bash", `su -lc 'rm -rf /'`, destructive},
+		{"su --command=", "Bash", `su --command='rm -rf /'`, destructive},
+		{"runuser -u X --", "Bash", `runuser -u root -- rm -rf /`, destructive},
+		{"flock FILE cmd", "Bash", `flock /tmp/l rm -rf ~`, destructive},
+		{"flock -c", "Bash", `flock /tmp/l -c 'rm -rf ~'`, destructive},
+		{"chrt prio cmd", "Bash", `chrt 10 rm -rf ~`, destructive},
+		{"taskset mask cmd", "Bash", `taskset 0x1 rm -rf ~`, destructive},
+		{"ionice -c 3 cmd", "Bash", `ionice -c 3 rm -rf ~`, destructive},
+		{"PowerShell bash -o", "PowerShell", `bash -o pipefail -c 'rm -rf ~'`, destructive},
+
 		// H3: secret reads.
 		{"ln then cat", "Bash", `ln -s .env notes.txt && cat notes.txt`, secret},
 		{"cat .e*", "Bash", `cat .e*`, secret},
@@ -106,6 +132,8 @@ func TestAuditCorpusLookAlikesStayClean(t *testing.T) {
 		"ssh host uptime", "awk '{print $1}' f", "sed -n 1p f", "cat ~/.kube/config.example",
 		`python3 -c "print('a' + 'b')"`, `node -e "console.log([1,2].join(','))"`, "git commit -m \"$(date)\"",
 		"sed 's/one two/three/' f", "cat \"$FILE\"",
+		"sed -i 's/version/edition/' f", "sed -e 's/e/E/g' f", "awk '$1 == \"x\" || $2 == \"y\" {print}' f",
+		"sed '/error/d' log", "env FOO=1 go test ./...", "node -p '1+1'", "perl -pi -e 's/a/b/' f",
 	} {
 		f := Derive("Bash", map[string]any{"command": cmd})
 		if cmd == "git push --force-with-lease=main:abc origin main" {

@@ -97,7 +97,13 @@ func psStatement(stmt string, depth int, st *psTamperState) Facts {
 			// code (its quotes are gone after tokenizing; joining the words
 			// back with "-c" first would make the shell run a command
 			// named -c).
-			for j, a := range args {
+			for j := 0; j < len(args); j++ {
+				a := args[j]
+				switch a {
+				case "-o", "+o", "-O", "+O", "--rcfile", "--init-file":
+					j++ // the option's value (bash -o pipefail -c '...')
+					continue
+				}
 				if a == "-c" || isShortCluster(a) && strings.Contains(a, "c") {
 					if j+1 < len(args) {
 						f.merge(Shell(args[j+1]))
@@ -117,7 +123,7 @@ func psStatement(stmt string, depth int, st *psTamperState) Facts {
 					j++
 					break
 				}
-				if l == "-d" || l == "--distribution" || l == "-u" || l == "--user" || l == "--cd" {
+				if l == "-d" || l == "--distribution" || l == "-u" || l == "--user" || l == "--cd" || l == "--shell-type" {
 					j += 2
 					continue
 				}
