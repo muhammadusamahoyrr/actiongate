@@ -56,7 +56,12 @@ const (
 )
 
 type hookInput struct {
-	SessionID string          `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// ToolUseID is Claude Code's id for this one tool call. It is the
+	// action's request id, so a hook re-run for the same call (a retry, a
+	// second matching hook) lands on the same action instead of making a
+	// new one (audit M3).
+	ToolUseID string          `json:"tool_use_id"`
 	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
 	// Cwd is the session's working directory: scripts a command runs are
@@ -195,7 +200,10 @@ func main() {
 		block("actiongate: could not read hook input; failing closed")
 	}
 	if in.ToolName == "" {
-		os.Exit(0) // nothing to govern
+		// Only tool calls reach this hook. A call with no tool name is
+		// malformed, and letting it through unchecked is how a parser
+		// differential would turn into a bypass (audit L1).
+		block("actiongate: hook input has no tool_name; failing closed")
 	}
 
 	session := in.SessionID
@@ -229,7 +237,7 @@ func main() {
 	checkArgs := []string{"check",
 		"-agent", overridable("AG_HOOK_AGENT", "claude-code"),
 		"-session", session,
-		"-request-id", uuid.NewString(),
+		"-request-id", requestID(in.ToolUseID),
 		"-tool", in.ToolName,
 		"-params", "-", // on stdin: a Write of a large file exceeds the OS argument limit
 		"-wait", wait,
@@ -290,4 +298,20 @@ func main() {
 	default:
 		block(fmt.Sprintf("actiongate: unexpected check exit %d; failing closed. %s", code, stderr.String()))
 	}
+}
+
+// requestID is the action's native request id: Claude Code's tool_use_id
+// when it gives a usable one, so retries of one call are one action. An
+// id that is missing, oversized or not plain printable ASCII is replaced
+// by a fresh UUID; that call is still governed, just not deduplicated.
+func requestID(toolUseID string) string {
+	if toolUseID == "" || len(toolUseID) > 128 {
+		return uuid.NewString()
+	}
+	for i := 0; i < len(toolUseID); i++ {
+		if c := toolUseID[i]; c <= ' ' || c > '~' {
+			return uuid.NewString()
+		}
+	}
+	return toolUseID
 }

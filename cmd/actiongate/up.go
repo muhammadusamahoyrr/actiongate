@@ -152,8 +152,9 @@ actiongate is up.
   %s; it holds the database password, so it is not printed here):
       verify -tenant %s -key epoch-1=%s
 
-  Approvals: without Slack configured, pending actions are approved via
-  POST %s/approval/callback (see README "Try it", step 6).
+  Approvals: without Slack configured, approve or deny pending actions
+  from a terminal with "actiongate approvals list", or POST to
+  %s/approval/callback (docs/GUIDE.md, section 6).
 %s`, cfgPath, cfg.TenantID, epochPub, cfg.ServerURL, serviceHint())
 
 	if alreadyRunning {

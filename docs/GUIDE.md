@@ -355,7 +355,13 @@ the outcome.
 
 Everything actiongate does is appended to a per-tenant audit stream that a
 background sealer numbers, hash-chains (SHA-256), and seals into epochs
-signed by a key the application does not hold.
+signed with an Ed25519 epoch key. Database triggers make the event log
+append-only: events cannot be deleted, and their content cannot change once
+written. The epoch private key, though, is derived from a seed in
+the control plane's config file, so anyone who can read that file can sign
+epochs too. Keep it readable only by the account that runs the control
+plane. While the agent runs as that same OS user, the built-in
+`__builtin_actiongate_secrets__` rule is what keeps the agent from reading it.
 
 ```bash
 verify -database-url "$AG_DATABASE_URL" -tenant <TENANT_ID> \
@@ -366,7 +372,10 @@ verify -database-url "$AG_DATABASE_URL" -tenant <TENANT_ID> \
 `verify` trusts nothing but the public key: it re-derives every event
 hash, epoch root, and signature from the raw database rows. If anyone —
 including a database administrator — edits history, `ok` flips to `false`
-and the exact tampered event is named. Exit codes: `0` verified, non-zero
+and the exact tampered event is named. This holds for anyone who cannot
+sign with the epoch key (see above). Events newer than the last sealed
+epoch are counted in `unsealed_tail` and are not yet covered by a
+signature. Exit codes: `0` verified, non-zero
 otherwise, so it drops straight into CI or a cron job.
 
 To see this property demonstrated safely:
