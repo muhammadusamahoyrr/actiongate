@@ -87,8 +87,44 @@ func psStatement(stmt string, depth int, st *psTamperState) Facts {
 					break
 				}
 			}
-		case name == "bash" || name == "sh" || name == "wsl":
-			f.merge(Shell(strings.Join(args, " ")))
+		case name == "bash" || name == "sh" || name == "zsh":
+			// bash -c 'rm -rf ~' from PowerShell: the token after -c is the
+			// code (its quotes are gone after tokenizing; joining the words
+			// back with "-c" first would make the shell run a command
+			// named -c).
+			for j, a := range args {
+				if a == "-c" || isShortCluster(a) && strings.Contains(a, "c") {
+					if j+1 < len(args) {
+						f.merge(Shell(args[j+1]))
+					}
+					break
+				}
+				if !strings.HasPrefix(a, "-") {
+					break // a script file
+				}
+			}
+		case name == "wsl":
+			// wsl [options] [--] cmd args: the rest is a command line.
+			j := 0
+			for j < len(args) {
+				l := strings.ToLower(args[j])
+				if l == "--" || l == "-e" || l == "--exec" {
+					j++
+					break
+				}
+				if l == "-d" || l == "--distribution" || l == "-u" || l == "--user" || l == "--cd" {
+					j += 2
+					continue
+				}
+				if strings.HasPrefix(l, "-") {
+					j++
+					continue
+				}
+				break
+			}
+			if j < len(args) {
+				f.merge(Shell(shellJoin(args[j:])))
+			}
 		}
 		if psMetadata[name] {
 			continue

@@ -230,6 +230,34 @@ func (a *shellAnalyzer) call(c *syntax.CallExpr, in stdinSource) {
 
 // command classifies one simple command after wrappers are stripped.
 func (a *shellAnalyzer) command(args []arg, in stdinSource) {
+	// env -S 'rm -rf ~' splits its value into a whole command line.
+	if len(args) > 1 && args[0].lit && cmdName(args[0].text) == "env" {
+		for i := 1; i < len(args); i++ {
+			t := args[i].text
+			v, hasV := "", false
+			switch {
+			case t == "-S" || t == "--split-string":
+				if i+1 < len(args) {
+					v, hasV, i = args[i+1].text, true, i+1
+				}
+			case strings.HasPrefix(t, "-S") && len(t) > 2:
+				v, hasV = t[2:], true
+			case strings.HasPrefix(t, "--split-string="):
+				v, hasV = strings.TrimPrefix(t, "--split-string="), true
+			}
+			if hasV {
+				code := v
+				if tail, ok := joinLiteral(args[i+1:]); ok {
+					code += " " + tail
+				}
+				a.f.merge(shellDepth(code, a.depth+1, a.opts))
+				return
+			}
+			if !strings.HasPrefix(t, "-") && !strings.Contains(t, "=") {
+				break
+			}
+		}
+	}
 	args = unwrap(args)
 	if len(args) == 0 {
 		return
@@ -267,19 +295,65 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 			a.f.destructive("recursive delete (rm)")
 		}
 	case name == "find":
-		for i, x := range rest {
+		for i := 0; i < len(rest); i++ {
+			x := rest[i]
 			if x.text == "-delete" {
 				a.f.destructive("find -delete")
 			}
-			if (x.text == "-exec" || x.text == "-execdir" || x.text == "-ok") && i+1 < len(rest) {
-				if set("rm", "shred", "unlink")[cmdName(rest[i+1].text)] {
+			if x.text == "-exec" || x.text == "-execdir" || x.text == "-ok" || x.text == "-okdir" {
+				// The words up to ; or + are a command run on every match:
+				// judge it as one (find . -exec sh -c 'rm -rf "$1"' _ {} \;,
+				// find . -exec sudo rm -rf {} +).
+				j := i + 1
+				for j < len(rest) && rest[j].text != ";" && rest[j].text != "+" {
+					j++
+				}
+				sub := unwrap(rest[i+1 : j])
+				if len(sub) > 0 && set("rm", "shred", "unlink")[cmdName(sub[0].text)] {
 					a.f.destructive("find -exec deletes every match")
 				}
+				if len(sub) > 0 {
+					a.command(rest[i+1:j], stdinSource{})
+				}
+				i = j
 			}
 		}
+	case name == "su" || name == "runuser":
+		// su -c 'cmd' [user]: a shell runs cmd.
+		for i, x := range rest {
+			if (x.text == "-c" || x.text == "--command") && i+1 < len(rest) {
+				if !rest[i+1].lit {
+					a.f.opaque(name + " -c with code built at run time")
+				} else {
+					a.f.merge(shellDepth(rest[i+1].text, a.depth+1, a.opts))
+				}
+				break
+			}
+		}
+	case name == "ssh":
+		a.remoteCommand(rest)
+	case name == "awk" || name == "gawk" || name == "mawk" || name == "nawk":
+		a.awk(rest)
+	case name == "sed" || name == "gsed":
+		a.sedExec(rest)
 	case name == "git":
 		if r := gitDestructive(texts(rest)); r != "" {
 			a.f.destructive(r)
+		}
+		// Aliases run whatever they define: git -c alias.p='push --force' p,
+		// git config alias.x '!rm -rf ~'. The analyzer cannot follow them.
+		t := texts(rest)
+		for i, w := range t {
+			if w == "-c" && i+1 < len(t) && strings.HasPrefix(strings.ToLower(t[i+1]), "alias.") {
+				a.f.opaque("git runs an alias defined inline (-c alias.*)")
+			}
+		}
+		if gitSubcommand(t) == "config" {
+			for _, w := range t {
+				if strings.HasPrefix(strings.ToLower(w), "alias.") {
+					a.f.opaque("git config defines an alias, which can run any command later")
+				}
+			}
 		}
 		if sub := gitSubcommand(texts(rest)); gitReaders[sub] {
 			a.secretArgs(name, rest)
@@ -300,7 +374,9 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 			a.f.destructive("deletes container volumes")
 		}
 	case name == "kubectl" || name == "oc":
-		if len(rest) > 0 && rest[0].text == "delete" {
+		// The verb is the first positional word, after options that take a
+		// value (kubectl -n prod delete ns app).
+		if kubeVerb(rest) == "delete" {
 			a.f.destructive("kubectl delete")
 		}
 	case name == "terraform" || name == "tofu":
@@ -391,7 +467,14 @@ func (a *shellAnalyzer) fromStdin(who string, in stdinSource, inspect func(strin
 }
 
 func (a *shellAnalyzer) nestedShell(rest []arg, in stdinSource) {
-	for i, x := range rest {
+	for i := 0; i < len(rest); i++ {
+		x := rest[i]
+		// Options whose value is the next word: bash -o pipefail -c '...'.
+		switch x.text {
+		case "-o", "+o", "-O", "+O", "--rcfile", "--init-file":
+			i++
+			continue
+		}
 		if x.text == "-c" || isShortCluster(x.text) && strings.Contains(x.text, "c") {
 			if i+1 >= len(rest) {
 				return
@@ -413,29 +496,81 @@ func (a *shellAnalyzer) nestedShell(rest []arg, in stdinSource) {
 	a.fromStdin("shell", in, shellDepth)
 }
 
+// interpreterOpts: which short option letters take inline code as their
+// value, and which take some other value as the next word.
+var interpreterOpts = map[string]struct{ codeLetters, valueLetters string }{
+	"python": {codeLetters: "c", valueLetters: "WXQ"},
+	"node":   {codeLetters: "ep", valueLetters: "r"},
+	"perl":   {codeLetters: "eE", valueLetters: "IMmx"},
+	"ruby":   {codeLetters: "e", valueLetters: "IrECxF"},
+	"php":    {codeLetters: "r", valueLetters: "dcz"},
+	"other":  {codeLetters: "ce", valueLetters: ""},
+}
+
 func (a *shellAnalyzer) interpreter(name string, rest []arg, in stdinSource) {
-	codeFlags := set("-c", "-e", "-E", "-r", "--eval", "-p", "--print")
-	if name == "python" || name == "python2" || name == "python3" {
-		codeFlags = set("-c")
+	kind := name
+	switch {
+	case strings.HasPrefix(name, "python"):
+		kind = "python"
+	case name == "nodejs" || name == "deno" || name == "bun":
+		kind = "node"
 	}
-	for i, x := range rest {
+	opts, ok := interpreterOpts[kind]
+	if !ok {
+		opts = interpreterOpts["other"]
+	}
+	runCode := func(i int) {
+		if i >= len(rest) {
+			return
+		}
+		if !rest[i].lit {
+			a.f.opaque(name + " runs code built at run time")
+			return
+		}
+		a.f.merge(inspectCode(rest[i].text, a.depth+1, a.opts))
+		// perl -ne 'print' .env, ruby -ne, python -c '...' file: the words
+		// after the code are files (or argv) the code reads.
+		a.secretArgs(name, rest[i+1:])
+	}
+	for i := 0; i < len(rest); i++ {
+		x := rest[i]
 		switch {
-		case codeFlags[x.text]:
-			if i+1 >= len(rest) {
-				return
-			}
-			if !rest[i+1].lit {
-				a.f.opaque(name + " runs code built at run time")
-				return
-			}
-			a.f.merge(inspectCode(rest[i+1].text, a.depth+1, a.opts))
+		case x.text == "--eval" || x.text == "--print" || x.text == "--execute":
+			runCode(i + 1)
 			return
 		case x.text == "-m":
 			return
 		case x.text == "-":
 			a.fromStdin(name, in, inspectCode)
 			return
-		case !strings.HasPrefix(x.text, "-"):
+		case isShortCluster(x.text):
+			// A cluster runs options left to right until one takes a value:
+			// python3 -Bc '...', perl -we '...', python3 -W ignore -c '...'.
+			for j, r := range x.text[1:] {
+				attached := x.text[2+j:]
+				if strings.ContainsRune(opts.codeLetters, r) {
+					if attached != "" {
+						if !x.lit {
+							a.f.opaque(name + " runs code built at run time")
+						} else {
+							a.f.merge(inspectCode(attached, a.depth+1, a.opts))
+						}
+						a.secretArgs(name, rest[i+1:])
+					} else {
+						runCode(i + 1)
+					}
+					return
+				}
+				if strings.ContainsRune(opts.valueLetters, r) {
+					if attached == "" {
+						i++ // the value is the next word
+					}
+					break
+				}
+			}
+		case strings.HasPrefix(x.text, "--"):
+			// long options: self-contained or unknown; keep scanning
+		default:
 			if x.proc {
 				a.f.opaque(name + " runs the output of a process substitution")
 			}
@@ -510,6 +645,181 @@ func operands(name string, rest []arg) []arg {
 	return rest
 }
 
+// kubeVerb is kubectl's verb: the first positional word, skipping global
+// options and their values.
+func kubeVerb(rest []arg) string {
+	valueOpts := set("-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server",
+		"--token", "--as", "--as-group", "--request-timeout", "--cache-dir", "-l", "--selector", "-o", "--output", "-c", "--container")
+	for i := 0; i < len(rest); i++ {
+		t := rest[i].text
+		if valueOpts[t] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(t, "-") {
+			continue
+		}
+		return t
+	}
+	return ""
+}
+
+// remoteCommand judges the command ssh runs on the remote host: it is run
+// there, but destroying data remotely is still destroying data.
+func (a *shellAnalyzer) remoteCommand(rest []arg) {
+	valueOpts := "BbcDEeFIiJLlmOoPpQRSWw"
+	i := 0
+	for ; i < len(rest); i++ {
+		t := rest[i].text
+		if t == "--" {
+			i++
+			break
+		}
+		if !isShortCluster(t) {
+			break
+		}
+		if last := t[len(t)-1]; len(t) == 2 && strings.IndexByte(valueOpts, last) >= 0 {
+			i++ // -p 22, -i key, -o Opt=x
+		}
+	}
+	if i+1 >= len(rest) {
+		return // host only: an interactive session
+	}
+	code, ok := joinLiteral(rest[i+1:])
+	if !ok {
+		a.f.opaque("ssh runs a remote command built at run time")
+		return
+	}
+	a.f.merge(shellDepth(code, a.depth+1, a.opts))
+}
+
+// awk can run shell commands: system("..."), print | "cmd", "cmd" | getline.
+func (a *shellAnalyzer) awk(rest []arg) {
+	var program string
+	for i := 0; i < len(rest); i++ {
+		t := rest[i].text
+		switch {
+		case t == "-f" || t == "--file":
+			a.f.opaque("awk runs a program from a file")
+			return
+		case t == "-v" || t == "-F" || t == "--assign" || t == "--field-separator":
+			i++
+		case strings.HasPrefix(t, "-"):
+		default:
+			if !rest[i].lit {
+				a.f.opaque("awk program built at run time")
+				return
+			}
+			program = t
+			i = len(rest)
+		}
+	}
+	if !strings.Contains(program, "system") && !strings.Contains(program, "|") {
+		return
+	}
+	if awkSystemComputed.MatchString(program) {
+		a.f.opaque("awk runs a shell command built at run time")
+	}
+	ran := false
+	for _, s := range stringLiterals(program) {
+		if strings.Contains(s, " ") {
+			a.f.merge(shellDepth(s, a.depth+1, a.opts))
+			ran = true
+		}
+	}
+	if !ran {
+		a.f.opaque("awk runs a shell command")
+	}
+}
+
+var awkSystemComputed = regexp.MustCompile(`system\s*\(\s*[^"'\s]`)
+
+// sedExec: GNU sed's e command and s///e flag run shell commands.
+func (a *shellAnalyzer) sedExec(rest []arg) {
+	var scripts []string
+	for i := 0; i < len(rest); i++ {
+		t := rest[i].text
+		switch {
+		case t == "-e" || t == "--expression":
+			if i+1 < len(rest) {
+				scripts = append(scripts, rest[i+1].text)
+				i++
+			}
+		case t == "-f" || t == "--file":
+			a.f.opaque("sed runs a script from a file")
+			return
+		case strings.HasPrefix(t, "-"):
+		default:
+			if len(scripts) == 0 {
+				scripts = append(scripts, t)
+			}
+			i = len(rest)
+		}
+	}
+	for _, s := range scripts {
+		if m := sedECommand.FindStringSubmatch(s); m != nil {
+			a.f.opaque("sed executes a shell command (e)")
+			if strings.TrimSpace(m[2]) != "" {
+				a.f.merge(shellDepth(m[2], a.depth+1, a.opts))
+			}
+		}
+		if sedSubstituteExec(s) {
+			a.f.opaque("sed executes the pattern space as a command (s///e)")
+		}
+	}
+}
+
+var sedECommand = regexp.MustCompile(`(^|[;\n{}]|^\s*\d+|/)\s*e(\s+([^;\n}]*))?($|[;\n}])`)
+
+// sedSubstituteExec reports an s command with the e flag (s/x/cmd/e): it
+// splits each s command on its own delimiter, honouring backslashes, and
+// reads only its flags.
+func sedSubstituteExec(script string) bool {
+	for i := 0; i < len(script); i++ {
+		if script[i] != 's' || i+1 >= len(script) {
+			continue
+		}
+		if i > 0 && (isWordByte(script[i-1])) {
+			continue // part of a word, not a command
+		}
+		delim := script[i+1]
+		if delim == '\\' || delim == '\n' || delim == ' ' || isWordByte(delim) {
+			continue
+		}
+		j, parts := i+2, 0
+		for j < len(script) && parts < 2 {
+			switch script[j] {
+			case '\\':
+				j++
+			case delim:
+				parts++
+			}
+			j++
+		}
+		if parts < 2 {
+			return false
+		}
+		for j < len(script) && strings.IndexByte(";}\n ", script[j]) < 0 {
+			if script[j] == 'e' {
+				return true
+			}
+			if strings.IndexByte("gpiImM0123456789w", script[j]) < 0 {
+				break
+			}
+			if script[j] == 'w' {
+				break // w FILE: the rest is a file name
+			}
+			j++
+		}
+		i = j
+	}
+	return false
+}
+
+func isWordByte(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
 // dangerousVerbs can destroy data depending on their flags and operands.
 var dangerousVerbs = set("rm", "rmdir", "shred", "unlink", "chmod", "chown", "chgrp", "dd", "truncate", "wipefs", "find", "rimraf")
 
@@ -517,12 +827,29 @@ var dangerousVerbs = set("rm", "rmdir", "shred", "unlink", "chmod", "chown", "ch
 // or work is destroyed.
 var gitRewriting = set("push", "reset", "clean", "branch", "checkout", "restore", "stash", "rebase", "filter-branch", "filter-repo", "update-ref", "reflog")
 
+// verbTools decide destructiveness by a verb word (kubectl delete, docker
+// volume rm, terraform destroy, aws ... terminate-instances).
+var verbTools = set("kubectl", "oc", "docker", "podman", "terraform", "tofu", "aws", "gcloud", "az", "helm", "redis-cli", "rsync", "git")
+
 func computedArgsMatter(name string, rest []arg) bool {
 	if dangerousVerbs[name] || strings.HasPrefix(name, "mkfs") {
 		return true
 	}
-	if name == "git" {
-		return gitRewriting[gitSubcommand(texts(rest))]
+	if verbTools[name] {
+		// A computed word at or before the verb hides which verb runs
+		// (git $(echo push) --force, docker $(echo volume) rm x); computed
+		// operands after a known verb (an image tag, a file) do not.
+		for _, x := range rest {
+			if !x.lit {
+				return true
+			}
+			if !strings.HasPrefix(x.text, "-") {
+				break // the first positional word, literal
+			}
+		}
+		if name == "git" {
+			return gitRewriting[gitSubcommand(texts(rest))]
+		}
 	}
 	return false
 }
@@ -560,6 +887,16 @@ func inspectCode(code string, depth int, o Options) Facts {
 	if strings.Contains(l, "rmdir") && strings.Contains(l, "recursive") {
 		f.destructive("inline code deletes recursively (rmdir recursive)")
 	}
+	// An argv list (subprocess.run(['rm','-rf','/x']), spawn("rm",
+	// ["-rf", ...])) is a command too: join it and judge it as shell.
+	if depth <= maxDepth {
+		for _, m := range argvList.FindAllString(code, 8) {
+			words := stringLiterals(m)
+			if len(words) >= 2 {
+				f.merge(shellDepth(shellJoin(words), depth+1, o))
+			}
+		}
+	}
 	for _, s := range stringLiterals(code) {
 		if IsSecretPath(s) {
 			f.secretPath(s, "inline code opens secret file "+s)
@@ -587,6 +924,23 @@ func inspectCode(code string, depth int, o Options) Facts {
 	return f
 }
 
+// argvList is a bracketed list of at least two string literals.
+var argvList = regexp.MustCompile(`[\[(]\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?:\s*,\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))+\s*,?\s*[\])]`)
+
+// shellJoin renders argv as one shell command line, single-quoting words
+// that need it, so the shell parser sees the same words.
+func shellJoin(words []string) string {
+	out := make([]string, len(words))
+	for i, w := range words {
+		if w != "" && !strings.ContainsAny(w, " \t\n'\"\\$`;&|<>(){}*?[]#~!") {
+			out[i] = w
+			continue
+		}
+		out[i] = "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
+	}
+	return strings.Join(out, " ")
+}
+
 var stringLit = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'`)
 
 func stringLiterals(code string) []string {
@@ -605,7 +959,8 @@ func stringLiterals(code string) []string {
 // nohup, timeout, npx, ... so "sudo -u x rm -rf /" is judged as rm.
 func unwrap(args []arg) []arg {
 	valueFlags := map[string]map[string]bool{
-		"sudo":    set("-u", "-g", "-p", "-C", "-D", "-h", "-r", "-t", "-U"),
+		"sudo": set("-u", "-g", "-p", "-C", "-D", "-h", "-r", "-t", "-U", "-R",
+			"--user", "--group", "--prompt", "--close-from", "--chdir", "--host", "--role", "--type", "--other-user", "--chroot"),
 		"doas":    set("-u", "-C"),
 		"nice":    set("-n"),
 		"xargs":   set("-n", "-I", "-L", "-P", "-d", "-E", "-s", "-a"),
@@ -618,7 +973,8 @@ func unwrap(args []arg) []arg {
 		name := cmdName(args[0].text)
 		switch name {
 		case "sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice",
-			"stdbuf", "xargs", "timeout", "npx", "pnpx", "bunx", "unbuffer", "chronic":
+			"stdbuf", "xargs", "timeout", "npx", "pnpx", "bunx", "unbuffer", "chronic",
+			"busybox", "toybox", "ionice", "chrt", "taskset", "setsid", "flock", "caffeinate":
 		default:
 			return args
 		}
@@ -814,8 +1170,17 @@ func resolve(w *syntax.Word, vars map[string]string, placeholder bool) (string, 
 }
 
 // decodeANSIC decodes the body of a bash $'...' string: \a \b \e \f \n \r
-// \t \v \\ \' \" \?, \xHH, \uHHHH, \UHHHHHHHH, \NNN (octal) and \cX.
+// \t \v \\ \' \" \?, \xHH, \uHHHH, \UHHHHHHHH, \NNN (octal) and \cX. Like
+// bash, it ends the string at the first NUL it produces ($'rm\x00x' is rm).
 func decodeANSIC(s string) string {
+	out := decodeANSICAll(s)
+	if i := strings.IndexByte(out, 0); i >= 0 {
+		return out[:i]
+	}
+	return out
+}
+
+func decodeANSICAll(s string) string {
 	var b strings.Builder
 	hexVal := func(h string) (int, bool) {
 		n := 0
@@ -902,12 +1267,13 @@ func decodeANSIC(s string) string {
 }
 
 // isLongPrefix reports whether t (before any "=value") is an abbreviation
-// of the long option full that GNU getopt and git would accept — at least
-// two characters after "--". An ambiguous abbreviation errors out in the
-// tool itself, so treating it as the dangerous option only fails closed.
+// of the long option full that GNU getopt and git would accept — any
+// prefix with at least one character after "--" (rm --r is --recursive).
+// An ambiguous abbreviation errors out in the tool itself, so treating it
+// as the dangerous option only fails closed.
 func isLongPrefix(t, full string) bool {
 	name, _, _ := strings.Cut(t, "=")
-	return strings.HasPrefix(name, "--") && len(name) >= 4 && strings.HasPrefix(full, name)
+	return strings.HasPrefix(name, "--") && len(name) >= 3 && strings.HasPrefix(full, name)
 }
 
 func unescape(s string, inDouble bool) string {
