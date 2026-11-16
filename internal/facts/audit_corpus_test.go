@@ -104,6 +104,8 @@ func TestAuditCorpusLookAlikesStayClean(t *testing.T) {
 		"aws ec2 describe-instances", "psql -c 'SELECT 1'", `psql -c "DELETE FROM t WHERE id = 3"`,
 		"chmod 644 file.txt", "cat README.md", "cat .env.example", "env", "sudo apt-get update",
 		"ssh host uptime", "awk '{print $1}' f", "sed -n 1p f", "cat ~/.kube/config.example",
+		`python3 -c "print('a' + 'b')"`, `node -e "console.log([1,2].join(','))"`, "git commit -m \"$(date)\"",
+		"sed 's/one two/three/' f", "cat \"$FILE\"",
 	} {
 		f := Derive("Bash", map[string]any{"command": cmd})
 		if cmd == "git push --force-with-lease=main:abc origin main" {

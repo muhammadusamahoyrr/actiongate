@@ -990,6 +990,13 @@ func inspectCode(code string, depth int, o Options) Facts {
 	}
 	if inlineDynamic.MatchString(code) {
 		f.inlineDynamic("inline code builds strings or names at run time")
+		// Building a name at run time AND opening files, running commands
+		// or talking to the network is the shape of hiding a target from
+		// inspection (open('.e'+'nv')): no shipped pack gated
+		// inline_dynamic, so it is also opaque (audit H5).
+		if sensitiveCall.MatchString(code) {
+			f.opaque("inline code builds a name at run time and opens files, runs commands or uses the network")
+		}
 	}
 	l := strings.ToLower(code)
 	for _, m := range []string{"rmtree", "rmsync", "rimraf", "remove_dir_all", "rm_rf", "fileutils.rm_r"} {
@@ -1036,6 +1043,10 @@ func inspectCode(code string, depth int, o Options) Facts {
 	}
 	return f
 }
+
+// sensitiveCall: file, process, deletion and network primitives across the
+// common interpreters.
+var sensitiveCall = regexp.MustCompile(`\b(open|readFile|readFileSync|createReadStream|read_text|read_bytes|file_get_contents|fopen|readfile|File\.read|IO\.read|subprocess|Popen|popen|system|spawn|spawnSync|execSync|exec|execFile|child_process|shutil|remove|unlink|rmtree|requests|urllib|urlopen|fetch|http\.request|socket)\s*[.(]`)
 
 // argvList is a bracketed list of at least two string literals.
 var argvList = regexp.MustCompile(`[\[(]\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?:\s*,\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))+\s*,?\s*[\])]`)
