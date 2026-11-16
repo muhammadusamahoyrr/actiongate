@@ -836,12 +836,12 @@ func (a *shellAnalyzer) remoteCommand(rest []arg) {
 				if strings.IndexByte(valueOpts, t[j]) < 0 {
 					continue
 				}
-				v, next := t[j+1:], i+1
+				v, vLit, next := t[j+1:], rest[i].lit, i+1
 				if v == "" && i+1 < len(rest) {
-					v, next = rest[i+1].text, i+2
+					v, vLit, next = rest[i+1].text, rest[i+1].lit, i+2
 				}
 				if t[j] == 'o' {
-					a.sshOption(v)
+					a.sshOption(v, vLit)
 				}
 				i = next - 1
 				break
@@ -868,19 +868,38 @@ func (a *shellAnalyzer) remoteCommand(rest []arg) {
 
 // sshOption judges an ssh -o Key=Value (or "Key Value") whose value is a
 // command ssh runs locally.
-func (a *shellAnalyzer) sshOption(opt string) {
-	key, val, ok := strings.Cut(opt, "=")
-	if !ok {
-		key, val, _ = strings.Cut(strings.TrimSpace(opt), " ")
+func (a *shellAnalyzer) sshOption(opt string, lit bool) {
+	if !lit {
+		a.f.opaque("ssh -o value built at run time")
+		return
 	}
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "proxycommand", "localcommand", "knownhostscommand", "match":
-		if v := strings.TrimSpace(val); v != "" && !strings.EqualFold(v, "none") {
-			a.f.merge(shellDepth(strings.TrimPrefix(strings.TrimPrefix(v, "exec "), "Exec "), a.depth+1, a.opts))
-			if strings.EqualFold(strings.TrimSpace(key), "match") {
-				a.f.opaque("ssh Match exec runs a local command")
-			}
+	// ssh splits a config line at the first space, tab or '=', whichever
+	// comes first, then drops one optional '=' and surrounding blanks.
+	opt = strings.TrimSpace(opt)
+	cut := strings.IndexAny(opt, " \t=")
+	if cut < 0 {
+		return
+	}
+	key := strings.ToLower(opt[:cut])
+	val := strings.TrimSpace(opt[cut:])
+	val = strings.TrimSpace(strings.TrimPrefix(val, "="))
+	if val == "" || strings.EqualFold(val, "none") {
+		return
+	}
+	switch key {
+	case "proxycommand", "localcommand", "knownhostscommand", "remotecommand":
+		// Local commands, and RemoteCommand (run on the host — destroying
+		// data there is still destroying data).
+		a.f.merge(shellDepth(val, a.depth+1, a.opts))
+	case "match":
+		a.f.opaque("ssh Match can run a local command (exec)")
+		if i := strings.Index(strings.ToLower(val), "exec"); i >= 0 {
+			a.f.merge(shellDepth(strings.Trim(strings.TrimSpace(val[i+4:]), `"`), a.depth+1, a.opts))
 		}
+	case "pkcs11provider", "securitykeyprovider", "include":
+		// Loads a library or pulls in more config (which may hold a
+		// ProxyCommand): what runs is decided elsewhere.
+		a.f.opaque("ssh -o " + key + " loads code or config the analyzer cannot see")
 	}
 }
 
@@ -888,33 +907,96 @@ func (a *shellAnalyzer) sshOption(opt string) {
 func (a *shellAnalyzer) awk(rest []arg) {
 	var programs []string
 	positional := false
-	for i := 0; i < len(rest); i++ {
-		t := rest[i].text
+	// longOpt handles a long option (from --x or -W x); it reports whether
+	// the analysis must stop (opaque) and whether the next word was used.
+	longOpt := func(t string, next *arg) (stop, usedNext bool) {
 		switch {
 		// Program text from a file, an include or a loaded extension:
-		// unreadable here. Long forms with GNU abbreviations, short forms
-		// alone or with an attached value (-fFILE, -EFILE, -iFILE, -lLIB).
-		case isLongPrefix(t, "--file") || isLongPrefix(t, "--exec") || isLongPrefix(t, "--include") || isLongPrefix(t, "--load"),
-			isShortCluster(t) && strings.ContainsAny(t[1:2], "fEil"):
+		// unreadable here (GNU abbreviations included).
+		case isLongPrefix(t, "--file") || isLongPrefix(t, "--exec") || isLongPrefix(t, "--include") || isLongPrefix(t, "--load"):
 			a.f.opaque("awk runs a program from a file or extension")
-			return
-		case t == "-e" || isLongPrefix(t, "--source") && !strings.Contains(t, "="):
-			if i+1 < len(rest) {
-				if !rest[i+1].lit {
-					a.f.opaque("awk program built at run time")
-					return
-				}
-				programs = append(programs, rest[i+1].text)
-				i++
-			}
-		case isLongPrefix(t, "--source"):
+			return true, false
+		case isLongPrefix(t, "--source") && strings.Contains(t, "="):
 			_, v, _ := strings.Cut(t, "=")
 			programs = append(programs, v)
-		case isShortCluster(t) && t[1] == 'e' && len(t) > 2:
-			programs = append(programs, t[2:]) // -eTEXT
-		case t == "-v" || t == "-F" || isLongPrefix(t, "--assign") && !strings.Contains(t, "=") ||
-			isLongPrefix(t, "--field-separator") && !strings.Contains(t, "="):
-			i++
+		case isLongPrefix(t, "--source"):
+			if next != nil {
+				if !next.lit {
+					a.f.opaque("awk program built at run time")
+					return true, true
+				}
+				programs = append(programs, next.text)
+				return false, true
+			}
+		case (isLongPrefix(t, "--assign") || isLongPrefix(t, "--field-separator")) && !strings.Contains(t, "="):
+			return false, next != nil
+		}
+		return false, false
+	}
+	for i := 0; i < len(rest); i++ {
+		t := rest[i].text
+		var next *arg
+		if i+1 < len(rest) {
+			next = &rest[i+1]
+		}
+		if isShortCluster(t) {
+			// Walk the cluster letter by letter: no-argument flags pass;
+			// the first letter that takes a value ends the word, with the
+			// rest of the word or the next word as that value.
+		walk:
+			for j, r := range t[1:] {
+				attached := t[2+j:]
+				value, valueLit, used := attached, rest[i].lit, false
+				if attached == "" && next != nil {
+					value, valueLit, used = next.text, next.lit, true
+				}
+				switch r {
+				case 'f', 'E', 'i', 'l':
+					a.f.opaque("awk runs a program from a file or extension")
+					return
+				case 'e':
+					if !valueLit {
+						a.f.opaque("awk program built at run time")
+						return
+					}
+					programs = append(programs, value)
+				case 'v', 'F':
+				case 'W':
+					// -W source=..., -W exec FILE: gawk's spelling of long options.
+					var after *arg
+					if used && i+2 < len(rest) {
+						after = &rest[i+2]
+					} else if !used {
+						after = next
+					}
+					stop, usedAfter := longOpt("--"+value, after)
+					if stop {
+						return
+					}
+					if usedAfter {
+						i++
+					}
+				default:
+					continue // a flag with no argument
+				}
+				if used {
+					i++
+				}
+				break walk
+			}
+			continue
+		}
+		if strings.HasPrefix(t, "--") {
+			stop, used := longOpt(t, next)
+			if stop {
+				return
+			}
+			if used {
+				i++
+			}
+			continue
+		}
+		switch {
 		case strings.HasPrefix(t, "-"):
 		default:
 			if len(programs) > 0 || positional {

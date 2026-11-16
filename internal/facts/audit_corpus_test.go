@@ -98,6 +98,12 @@ func TestAuditBypassCorpus(t *testing.T) {
 		{"awk --sour= abbreviation", "Bash", `awk --sour='BEGIN{system("rm -rf ~")}'`, destructive},
 		{"awk -eTEXT attached", "Bash", `gawk '-eBEGIN{system("rm -rf ~")}'`, destructive},
 		{"su --com abbreviation", "Bash", `su --com 'rm -rf /'`, destructive},
+		{"ssh -o space before =", "Bash", `ssh -o 'ProxyCommand rm -rf ~/x=y' host`, destructive},
+		{"ssh RemoteCommand", "Bash", `ssh -o RemoteCommand='rm -rf /srv' host`, destructive},
+		{"ssh computed -o", "Bash", `ssh -o "$OPT" host`, gated},
+		{"awk cluster -bf", "Bash", `awk -bf prog.awk data`, gated},
+		{"awk -Wsource=", "Bash", `gawk -Wsource='BEGIN{system("rm -rf ~")}'`, destructive},
+		{"awk -W exec FILE", "Bash", `gawk -W exec prog.awk`, gated},
 
 		// H3: secret reads.
 		{"ln then cat", "Bash", `ln -s .env notes.txt && cat notes.txt`, secret},
@@ -152,6 +158,8 @@ func TestAuditCorpusLookAlikesStayClean(t *testing.T) {
 		"sed 's/one two/three/' f", "cat \"$FILE\"",
 		"sed -i 's/version/edition/' f", "sed -e 's/e/E/g' f", "awk '$1 == \"x\" || $2 == \"y\" {print}' f",
 		"sed '/error/d' log", "env FOO=1 go test ./...", "node -p '1+1'", "perl -pi -e 's/a/b/' f",
+		"awk -F, '{print $1}' f.csv", "awk -v n=3 'NR<=n' f", "ssh -o ProxyJump=bastion host uptime",
+		"ssh -o StrictHostKeyChecking=no host ls",
 	} {
 		f := Derive("Bash", map[string]any{"command": cmd})
 		if cmd == "git push --force-with-lease=main:abc origin main" {
