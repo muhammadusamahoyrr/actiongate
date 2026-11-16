@@ -8,6 +8,7 @@ package fingerprint
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"hash"
 	"math"
@@ -58,4 +59,37 @@ func writeLenPrefixed(h hash.Hash, field []byte) error {
 	h.Write(lenBuf[:])
 	h.Write(field)
 	return nil
+}
+
+// CanonicalParams is the params encoding every party fingerprints: the
+// control plane at intake, the gateway when it checks a grant, and verify
+// when it re-derives a sealed request from the stored row. Keys are
+// sorted (encoding/json) and numbers are float64, as protobuf Struct
+// carries them. Negative zero becomes zero, because Postgres jsonb has no
+// negative zero: a "-0" hashed at intake would read back as "0" and make
+// verify report a genuine request as tampered. No other value changes, so
+// fingerprints of every other request are the same as before.
+func CanonicalParams(params map[string]any) ([]byte, error) {
+	if params == nil {
+		params = map[string]any{}
+	}
+	return json.Marshal(normalizeZero(params))
+}
+
+func normalizeZero(v any) any {
+	switch t := v.(type) {
+	case float64:
+		if t == 0 {
+			return float64(0) // drops the sign of -0
+		}
+	case map[string]any:
+		for k, e := range t {
+			t[k] = normalizeZero(e)
+		}
+	case []any:
+		for i, e := range t {
+			t[i] = normalizeZero(e)
+		}
+	}
+	return v
 }

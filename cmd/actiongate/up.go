@@ -201,6 +201,7 @@ func runControlPlane(ctx context.Context, cfg *devConfig, log *slog.Logger) erro
 		EpochKeySeed:       epochSeed,
 		GrantKeyID:         cfg.GrantKeyID,
 		EpochKeyID:         cfg.EpochKeyID,
+		EpochRetiredKeyIDs: cfg.EpochRetiredKeyIDs,
 		SlackBotToken:      firstNonEmpty(cfg.SlackBotToken, os.Getenv("AG_SLACK_BOT_TOKEN")),
 		SlackSigningSecret: firstNonEmpty(cfg.SlackSigningSecret, os.Getenv("AG_SLACK_SIGNING_SECRET")),
 		SlackChannel:       firstNonEmpty(cfg.SlackChannel, os.Getenv("AG_SLACK_CHANNEL")),

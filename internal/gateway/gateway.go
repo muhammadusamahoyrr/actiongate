@@ -11,7 +11,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -368,7 +367,7 @@ func canonicalParams(params map[string]any) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("params: %w", err)
 	}
-	return json.Marshal(st.AsMap())
+	return fingerprint.CanonicalParams(st.AsMap())
 }
 
 func statusFor(s string) (actiongatev1.ExecutionStatus, error) {

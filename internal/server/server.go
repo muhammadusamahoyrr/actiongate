@@ -32,6 +32,7 @@ import (
 	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
 	"github.com/muhammadusamahoyrr/actiongate/internal/facts"
+	"github.com/muhammadusamahoyrr/actiongate/internal/fingerprint"
 	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
 	"github.com/muhammadusamahoyrr/actiongate/internal/health"
 	"github.com/muhammadusamahoyrr/actiongate/internal/orchestrator"
@@ -217,7 +218,7 @@ func (s *Server) SubmitAction(ctx context.Context, req *connect.Request[actionga
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("session_id must be a uuid"))
 	}
-	params, err := json.Marshal(m.GetToolParams().AsMap())
+	params, err := fingerprint.CanonicalParams(m.GetToolParams().AsMap())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}

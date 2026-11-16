@@ -53,6 +53,9 @@ type Config struct {
 	// with the old public key.
 	GrantKeyID string
 	EpochKeyID string
+	// EpochRetiredKeyIDs are earlier epoch key ids: epochs they signed are
+	// still expected, so health does not flag them after a rotation.
+	EpochRetiredKeyIDs []string
 
 	ApproverDefault string // defaults to "team-lead"
 
@@ -235,7 +238,7 @@ func Run(ctx context.Context, cfg Config) error {
 		GrantKeyID: grantSigner.KeyID(), GrantPublicKey: grantPub, Logger: log,
 		SlackSigningSecret: cfg.SlackSigningSecret,
 		SlackApprovers:     cfg.SlackApprovers,
-		EpochKeyIDs:        []string{epochSigner.KeyID()},
+		EpochKeyIDs:        append([]string{epochSigner.KeyID()}, cfg.EpochRetiredKeyIDs...),
 	}
 	httpServer := &http.Server{
 		Addr:              listen,
