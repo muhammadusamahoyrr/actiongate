@@ -186,13 +186,36 @@ type Resolution struct {
 // token's single-use mark, the approval row's version CAS, and the
 // ApprovalDecision record. A concurrent resolver loses the CAS and gets
 // ErrAlreadyResolved — the plan §9 double-approval race, closed.
+//
+// Resolve takes the canonical token only (the /approval/callback path); a
+// Slack-bound token is refused here, see ResolveFromSlack.
 func (s *Service) Resolve(ctx context.Context, token, decision, approverID, reason string) (Resolution, error) {
-	if decision != "approved" && decision != "denied" {
-		return Resolution{}, fmt.Errorf("unknown decision %q", decision)
-	}
 	tenantID, tokenHash, err := parseToken(s.TokenSecret, token)
 	if err != nil {
 		return Resolution{}, err
+	}
+	return s.resolve(ctx, tenantID, tokenHash, decision, approverID, reason)
+}
+
+// ResolveFromSlack is Resolve for the Slack endpoint, whose requests Slack
+// has signed: it also accepts the Slack-bound token form.
+func (s *Service) ResolveFromSlack(ctx context.Context, token, decision, approverID, reason string) (Resolution, error) {
+	tenantID, tokenHash, err := parseSlackToken(s.TokenSecret, token)
+	if err != nil {
+		return Resolution{}, err
+	}
+	return s.resolve(ctx, tenantID, tokenHash, decision, approverID, reason)
+}
+
+// SlackToken derives the Slack-bound token for an approval request: what a
+// Slack button carries, accepted only by ResolveFromSlack.
+func (s *Service) SlackToken(tenantID, approvalRequestID uuid.UUID) (string, error) {
+	return mintSlackToken(s.TokenSecret, tenantID, approvalRequestID)
+}
+
+func (s *Service) resolve(ctx context.Context, tenantID uuid.UUID, tokenHash []byte, decision, approverID, reason string) (Resolution, error) {
+	if decision != "approved" && decision != "denied" {
+		return Resolution{}, fmt.Errorf("unknown decision %q", decision)
 	}
 
 	// Load the token's world under the tenant's RLS scope.

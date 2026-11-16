@@ -50,6 +50,9 @@ type Server struct {
 	// SlackSigningSecret enables the /slack/interaction endpoint; empty
 	// leaves it unregistered.
 	SlackSigningSecret string
+	// SlackApprovers, when non-empty, are the only Slack user ids whose
+	// clicks resolve an approval (audit M5). Empty: anyone in the channel.
+	SlackApprovers []string
 	// Version and EpochKeyIDs enrich /healthz with the composite health report.
 	Version     string
 	EpochKeyIDs []string
@@ -425,7 +428,12 @@ func (s *Server) handleApprovalCallback(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
 		return
 	}
-	res, err := s.Approvals.Resolve(r.Context(), body.Token, body.Decision, body.ApproverID, body.Reason)
+	approver, err := callbackApprover(body.ApproverID)
+	if err != nil {
+		http.Error(w, `{"error":"bad approver_id"}`, http.StatusBadRequest)
+		return
+	}
+	res, err := s.Approvals.Resolve(r.Context(), body.Token, body.Decision, approver, body.Reason)
 	switch {
 	case err == nil:
 		w.Header().Set("Content-Type", "application/json")
@@ -496,4 +504,25 @@ func envelopeMessage(envelopeBytes []byte) *actiongatev1.GrantEnvelope {
 
 func mapSubmitError(err error) error {
 	return connect.NewError(connect.CodeFailedPrecondition, err)
+}
+
+// callbackApprover records who the callback's caller says approved (audit
+// M5). The callback token proves the request is for a real pending
+// approval, not who sent it, so the claimed name is kept under its own
+// "callback:" namespace: it can never pass for an identity a channel
+// verified, such as "slack:U123".
+func callbackApprover(claimed string) (string, error) {
+	claimed = strings.TrimSpace(claimed)
+	if claimed == "" {
+		return "callback:unspecified", nil
+	}
+	if len(claimed) > 128 {
+		return "", errors.New("approver_id longer than 128 bytes")
+	}
+	for _, r := range claimed {
+		if r < ' ' || r == 0x7f {
+			return "", errors.New("approver_id contains control characters")
+		}
+	}
+	return "callback:" + claimed, nil
 }

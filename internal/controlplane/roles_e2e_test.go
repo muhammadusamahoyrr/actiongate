@@ -192,6 +192,11 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 	if err := owner.QueryRow(ctx, `select status from approval_requests where id = $1`, approvalID).Scan(&status); err != nil || status != "approved" {
 		t.Errorf("approval status = %q, %v; want approved", status, err)
 	}
+	// Audit M5: the callback's claimed approver is recorded as a claim.
+	var approver string
+	if err := owner.QueryRow(ctx, `select approver_id from approval_decisions where approval_request_id = $1`, approvalID).Scan(&approver); err != nil || approver != "callback:local:tester" {
+		t.Errorf("recorded approver = %q, %v; want callback:local:tester", approver, err)
+	}
 
 	// The sealer (its own BYPASSRLS role) seals the chain, up to and
 	// including the first action's ActionCreated event.

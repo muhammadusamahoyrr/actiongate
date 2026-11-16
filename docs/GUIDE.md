@@ -310,6 +310,14 @@ Approval requests appear as messages with **Approve** / **Deny** buttons.
 Clicks are signature-verified against Slack's signing secret and recorded
 with the Slack user's identity.
 
+By default anyone who can click in the channel can decide. To limit that,
+list the Slack user ids allowed to approve: set `slack_approvers` in
+`dev.json` (a JSON list) or `AG_SLACK_APPROVERS="U012AB3CD,U045EF6GH"`.
+Clicks from anyone else are refused and the approval stays pending. The
+token in a Slack button only works through Slack's signed endpoint, so
+copying it out of the message and posting it to `/approval/callback` does
+not get around the list.
+
 ### Without Slack — `actiongate approvals`
 
 While a governed tool call waits (up to 5 minutes), open a terminal:
@@ -350,6 +358,10 @@ curl -X POST http://localhost:8091/approval/callback \
 Approvals are resolved with compare-and-swap: two concurrent approvers
 can't double-resolve, and a replayed token is rejected without changing
 the outcome.
+
+The token proves the request is for a real pending approval, not who sent
+it. So the `approver_id` you send is recorded as a claim, `callback:you`,
+and never as an identity a channel verified, such as `slack:U012AB3CD`.
 
 ## 7. Verifying the audit log
 
@@ -524,6 +536,7 @@ the signed outcome receipt.
 | `AG_GRANT_KEY_SEED` / `AG_EPOCH_KEY_SEED` | recommended | Base64 32-byte signing seeds; ephemeral (with a loud warning) if unset |
 | `AG_APPROVER_DEFAULT` | no (`team-lead`) | Default approver target |
 | `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals |
+| `AG_SLACK_APPROVERS` | no | comma-separated Slack user ids allowed to approve (default: anyone in the channel) |
 
 ### Files on disk
 

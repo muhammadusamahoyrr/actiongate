@@ -71,6 +71,7 @@ func run() error {
 		SlackBotToken:      k.String("slack_bot_token"),
 		SlackSigningSecret: k.String("slack_signing_secret"),
 		SlackChannel:       k.String("slack_channel"),
+		SlackApprovers:     controlplane.SplitList(k.String("slack_approvers")),
 	})
 }
 

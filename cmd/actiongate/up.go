@@ -202,6 +202,7 @@ func runControlPlane(ctx context.Context, cfg *devConfig, log *slog.Logger) erro
 		SlackBotToken:      firstNonEmpty(cfg.SlackBotToken, os.Getenv("AG_SLACK_BOT_TOKEN")),
 		SlackSigningSecret: firstNonEmpty(cfg.SlackSigningSecret, os.Getenv("AG_SLACK_SIGNING_SECRET")),
 		SlackChannel:       firstNonEmpty(cfg.SlackChannel, os.Getenv("AG_SLACK_CHANNEL")),
+		SlackApprovers:     slackApprovers(cfg.SlackApprovers, os.Getenv("AG_SLACK_APPROVERS")),
 	})
 }
 
@@ -465,4 +466,13 @@ func selfTest(ctx context.Context, gw *gateway.Gateway, statePath string) error 
 	default:
 		return err
 	}
+}
+
+// slackApprovers is the dev.json list, or else AG_SLACK_APPROVERS split on
+// commas.
+func slackApprovers(fromConfig []string, fromEnv string) []string {
+	if len(fromConfig) > 0 {
+		return fromConfig
+	}
+	return controlplane.SplitList(fromEnv)
 }
