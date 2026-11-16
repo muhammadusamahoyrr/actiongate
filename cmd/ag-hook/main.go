@@ -59,6 +59,9 @@ type hookInput struct {
 	SessionID string          `json:"session_id"`
 	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
+	// Cwd is the session's working directory: scripts a command runs are
+	// read from here so their text can be judged (write-then-run).
+	Cwd string `json:"cwd"`
 }
 
 type checkResult struct {
@@ -231,6 +234,9 @@ func main() {
 		"-params", "-", // on stdin: a Write of a large file exceeds the OS argument limit
 		"-wait", wait,
 	}
+	if in.Cwd != "" {
+		checkArgs = append(checkArgs, "-cwd", in.Cwd)
+	}
 	if locked {
 		state, err := profileStatePath()
 		if err != nil {
@@ -278,7 +284,9 @@ func main() {
 		}
 		block(fmt.Sprintf("🛑 actiongate blocked this action: %s (rule %q)", reason, res.RuleID))
 	case 3:
-		block("⏳ actiongate: approval timed out — the action was not executed")
+		block("⏳ actiongate: approval timed out — the action was not executed. " +
+			"A human can approve held actions in Slack, or in a terminal with `actiongate approvals` " +
+			"(the agent cannot approve its own).")
 	default:
 		block(fmt.Sprintf("actiongate: unexpected check exit %d; failing closed. %s", code, stderr.String()))
 	}

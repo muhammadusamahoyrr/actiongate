@@ -1,13 +1,18 @@
 package controlplane_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +22,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/muhammadusamahoyrr/actiongate/internal/admin"
+	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
 	"github.com/muhammadusamahoyrr/actiongate/internal/controlplane"
 	"github.com/muhammadusamahoyrr/actiongate/internal/dbroles"
 	"github.com/muhammadusamahoyrr/actiongate/internal/dbruntime"
@@ -81,11 +87,12 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 	sealerDSN, _ := dbroles.DSN(rt.DSN(), dbroles.SealerRole, "pw-sealer")
 
 	addr := freeAddr(t)
+	tokenSecret := randomString(t, 32)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- controlplane.Run(ctx, controlplane.Config{
 			DatabaseURL: appDSN, SealerDatabaseURL: sealerDSN, SkipQueueMigrate: true,
-			Listen: addr, TokenSecret: randomString(t, 32),
+			Listen: addr, TokenSecret: tokenSecret,
 			GrantKeySeed: randomBytes(t, 32), EpochKeySeed: randomBytes(t, 32),
 		})
 	}()
@@ -117,6 +124,69 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 		ToolName: "Read", Params: map[string]any{"file_path": "/home/x/.config/actiongate/dev.json"}, Environment: "default", Wait: 15 * time.Second,
 	}); err == nil {
 		t.Error("reading actiongate's dev.json was allowed")
+	}
+
+	// Write-then-run (audit H2): a script the agent wrote is read by the
+	// gateway, carried to the control plane, and judged there — rm -rf ~
+	// inside it needs approval, which nobody gives here, so it times out.
+	scriptDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(scriptDir, "cleanup.sh"), []byte("#!/bin/sh\nrm -rf ~\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = gw.Check(ctx, gateway.CheckInput{
+		AgentID: "e2e", SessionID: uuid.NewString(), NativeRequestID: uuid.NewString(),
+		ToolName: "Bash", Params: map[string]any{"command": "bash cleanup.sh"}, Environment: "default",
+		Wait: 2 * time.Second, Cwd: scriptDir,
+	})
+	if !errors.Is(err, gateway.ErrTimedOut) {
+		t.Errorf("bash cleanup.sh (rm -rf ~ inside): err = %v, want it held for approval (timed out)", err)
+	}
+
+	// Audit H6/H10: a held action's approval message shows the command,
+	// and a local approval through the callback (token re-derived from the
+	// secret, as `actiongate approvals approve` does) is recorded.
+	held, err := gw.Check(ctx, gateway.CheckInput{
+		AgentID: "e2e", SessionID: uuid.NewString(), NativeRequestID: uuid.NewString(),
+		ToolName: "Bash", Params: map[string]any{"command": "rm -rf ./build-cache"}, Environment: "default",
+		Wait: time.Second,
+	})
+	if !errors.Is(err, gateway.ErrTimedOut) {
+		t.Fatalf("rm -rf: err = %v, want held for approval", err)
+	}
+	var approvalID uuid.UUID
+	var body string
+	deadlineA := time.Now().Add(15 * time.Second)
+	for {
+		err := owner.QueryRow(ctx,
+			`select (args->>'approval_request_id')::uuid, args->>'body' from river_job
+			  where kind = 'deliver_approval' and args->>'action_id' = $1`, held.ActionID).Scan(&approvalID, &body)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadlineA) {
+			t.Fatalf("no approval delivery job for the held action: %v", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !strings.Contains(body, "rm -rf ./build-cache") {
+		t.Errorf("approval body does not show the command:\n%s", body)
+	}
+	cbToken, err := (&approval.Service{TokenSecret: []byte(tokenSecret)}).CallbackToken(tenant, approvalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb, _ := json.Marshal(map[string]string{"token": cbToken, "decision": "approved", "approver_id": "local:tester"})
+	resp, err := http.Post(serverURL+"/approval/callback", "application/json", bytes.NewReader(cb)) //nolint:gosec,noctx // test loopback URL
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("local approval via callback: %s", resp.Status)
+	}
+	var status string
+	if err := owner.QueryRow(ctx, `select status from approval_requests where id = $1`, approvalID).Scan(&status); err != nil || status != "approved" {
+		t.Errorf("approval status = %q, %v; want approved", status, err)
 	}
 
 	// The sealer (its own BYPASSRLS role) seals the chain.

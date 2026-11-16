@@ -2,11 +2,9 @@ package approval
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -14,25 +12,40 @@ import (
 
 // Callback tokens (plan §9, round 4): HMAC-signed, single-use, expiring, and
 // opaque — the approval_request_id is never embedded; the database maps
-// token→request. Only the SHA-256 of the token is stored; the raw token
-// exists in the delivered notification (and transiently in the queued
-// delivery job — a documented V1 limitation).
+// token→request. Only the SHA-256 of the token is stored.
 //
-// Format: "agt1_" + base64url(tenant_id[16] || random[32]) + "." +
-// base64url(HMAC-SHA256(secret, "AGTOK1" || payload)). The tenant id rides
-// inside the signed payload so Resolve can scope its lookup under RLS
-// without a cross-tenant read.
+// The raw token is never stored anywhere (audit C5): it is DERIVED from the
+// token secret and the approval request id, so the delivery worker
+// re-derives it at send time and the queued job carries ids only. Reading
+// the database (approval_callback_tokens, river_job) yields no usable
+// token; producing one needs the token secret, exactly as forging one does.
+//
+// Format: "agt1_" + base64url(tenant_id[16] || seed[32]) + "." +
+// base64url(HMAC-SHA256(secret, "AGTOK1" || payload)), with
+// seed = HMAC-SHA256(secret, "AGTOKSEED1" || approval_request_id). The
+// tenant id rides inside the signed payload so Resolve can scope its
+// lookup under RLS without a cross-tenant read.
 
 var ErrTokenInvalid = errors.New("callback token invalid")
 
 const tokenPrefix = "agt1_"
 
-func mintToken(secret []byte, tenantID uuid.UUID) (token string, tokenHash []byte, err error) {
-	payload := make([]byte, 16+32)
-	copy(payload, tenantID[:])
-	if _, err := rand.Read(payload[16:]); err != nil {
-		return "", nil, fmt.Errorf("token randomness: %w", err)
+// mintToken derives the callback token for one approval request. It is
+// deterministic, so the delivery worker can re-derive it instead of the
+// token being stored.
+func mintToken(secret []byte, tenantID, approvalID uuid.UUID) (token string, tokenHash []byte, err error) {
+	if len(secret) < 32 {
+		return "", nil, errors.New("token secret must be at least 32 bytes")
 	}
+	if approvalID == uuid.Nil {
+		return "", nil, errors.New("token: approval request id is required")
+	}
+	payload := make([]byte, 0, 16+32)
+	payload = append(payload, tenantID[:]...)
+	seed := hmac.New(sha256.New, secret)
+	seed.Write([]byte("AGTOKSEED1"))
+	seed.Write(approvalID[:])
+	payload = seed.Sum(payload)
 	mac := tokenMAC(secret, payload)
 	token = tokenPrefix +
 		base64.RawURLEncoding.EncodeToString(payload) + "." +

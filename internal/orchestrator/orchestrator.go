@@ -20,7 +20,9 @@ import (
 	"github.com/muhammadusamahoyrr/actiongate/internal/approval"
 	"github.com/muhammadusamahoyrr/actiongate/internal/domain"
 	"github.com/muhammadusamahoyrr/actiongate/internal/execution"
+	"github.com/muhammadusamahoyrr/actiongate/internal/facts"
 	"github.com/muhammadusamahoyrr/actiongate/internal/policy"
+	"github.com/muhammadusamahoyrr/actiongate/internal/preview"
 	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
@@ -158,7 +160,10 @@ func (o *Orchestrator) Submit(ctx context.Context, in SubmitInput) (SubmitResult
 			RiskClassification: decision.RiskClassification,
 			MatchedRuleID:      decision.MatchedRuleID,
 			Title:              fmt.Sprintf("Approval needed: %s by %s", in.ToolName, in.AgentID),
-			Body:               fmt.Sprintf("rule %s classified this %s action as %s", decision.MatchedRuleID, in.ToolName, decision.RiskClassification),
+			// What will run (credentials masked) and why it was flagged,
+			// so the approver can tell rm -rf node_modules from rm -rf ~.
+			Body: preview.Body(in.ToolName, in.AgentID, decision.MatchedRuleID, decision.RiskClassification,
+				params, facts.Derive(in.ToolName, params).Reasons),
 		})
 		if err != nil {
 			return SubmitResult{}, err

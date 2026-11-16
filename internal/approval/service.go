@@ -102,7 +102,7 @@ func (s *Service) Request(ctx context.Context, in RequestInput) (Requested, erro
 	if err != nil {
 		return Requested{}, fmt.Errorf("uuidv7: %w", err)
 	}
-	token, tokenHash, err := mintToken(s.TokenSecret, in.TenantID)
+	token, tokenHash, err := mintToken(s.TokenSecret, in.TenantID, approvalID)
 	if err != nil {
 		return Requested{}, err
 	}
@@ -151,7 +151,7 @@ func (s *Service) Request(ctx context.Context, in RequestInput) (Requested, erro
 			queue.InsertJobEffect(s.Queue, queue.DeliverApprovalArgs{
 				TenantID: in.TenantID, ActionID: in.ActionID,
 				ApprovalRequestID: approvalID, ApproverTarget: target,
-				Title: in.Title, Body: in.Body, CallbackToken: token,
+				Title: in.Title, Body: in.Body, // no token: the worker re-derives it
 			}, nil),
 		},
 	})
@@ -164,6 +164,14 @@ func (s *Service) Request(ctx context.Context, in RequestInput) (Requested, erro
 		ExpiresAt:         expiresAt,
 		Token:             token,
 	}, nil
+}
+
+// CallbackToken re-derives the callback token for an approval request. The
+// delivery worker calls it at send time, so the raw token is never stored
+// in the queue or the database (audit C5).
+func (s *Service) CallbackToken(tenantID, approvalRequestID uuid.UUID) (string, error) {
+	token, _, err := mintToken(s.TokenSecret, tenantID, approvalRequestID)
+	return token, err
 }
 
 type Resolution struct {
