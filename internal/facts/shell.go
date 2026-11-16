@@ -38,7 +38,11 @@ var dbClients = set("psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "mongo", "m
 var readers = set("cat", "tac", "less", "more", "head", "tail", "nl", "grep", "egrep", "fgrep", "rg", "ag", "ack",
 	"sed", "awk", "gawk", "cut", "sort", "uniq", "paste", "tr", "strings", "xxd", "od", "hexdump", "base64", "base32",
 	"openssl", "gpg", "diff", "cmp", "comm", "jq", "yq", "source", ".", "cp", "mv", "scp", "rsync", "curl", "wget",
-	"nc", "ncat", "socat", "tar", "zip", "gzip", "bzip2", "xz", "7z", "zcat", "bat", "dd", "iconv", "split", "column")
+	"nc", "ncat", "socat", "tar", "zip", "gzip", "bzip2", "xz", "7z", "zcat", "bat", "dd", "iconv", "split", "column",
+	// a link or copy to a secret is a way to read it under another name
+	"ln", "install",
+	// editors read (and can print, vim -es -c '%p') what they open
+	"vi", "vim", "nvim", "view", "ex", "ed", "nano", "emacs", "micro", "code", "notepad")
 
 // patternFirst are readers whose first operand is a pattern or program, not
 // a file, unless the pattern is given by flag (grep -e, sed -e, awk -f).
@@ -140,6 +144,11 @@ func (a *shellAnalyzer) visit(node syntax.Node) bool {
 				if t := a.approx(r.Word); a.cwd.file(t) {
 					a.f.selfTamper("redirects output into actiongate control file " + path.Base(slash(t)))
 				}
+				// Writing a credential file (>> ~/.ssh/authorized_keys,
+				// > .env) plants or replaces credentials: persistence.
+				if t := a.approx(r.Word); IsSecretPath(t) {
+					a.f.secretPath(t, "writes a credential file "+path.Base(slash(t)))
+				}
 			}
 			var body *syntax.Word
 			switch {
@@ -184,6 +193,21 @@ type arg struct {
 	// proc: the word is a process substitution, <(cmd); as a script
 	// argument it runs whatever cmd prints.
 	proc bool
+	// subst: the word contains a command substitution ($(...), `...`),
+	// so its value is decided by a command the analyzer does not run.
+	subst bool
+}
+
+// hasCmdSubst reports a command substitution anywhere in a word.
+func hasCmdSubst(w *syntax.Word) bool {
+	found := false
+	syntax.Walk(w, func(n syntax.Node) bool {
+		if _, ok := n.(*syntax.CmdSubst); ok {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 func (a *shellAnalyzer) assign(assigns []*syntax.Assign) {
@@ -221,7 +245,7 @@ func (a *shellAnalyzer) call(c *syntax.CallExpr, in stdinSource) {
 					proc = true
 				}
 			}
-			args = append(args, arg{s, ok, proc})
+			args = append(args, arg{text: s, lit: ok, proc: proc, subst: hasCmdSubst(bw)})
 			a.texts = append(a.texts, s)
 		}
 	}
@@ -258,7 +282,13 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 			}
 		}
 	}
-	args = unwrap(args)
+	unwrapped := unwrap(args)
+	// `env` with no command prints the whole environment.
+	if len(unwrapped) == 0 && len(args) > 0 && args[0].lit && cmdName(args[0].text) == "env" {
+		a.f.secret("env dumps the environment")
+		return
+	}
+	args = unwrapped
 	if len(args) == 0 {
 		return
 	}
@@ -477,7 +507,19 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 		// Ablation: every mention of a credential file counts as a read.
 		a.mentionedSecret(name, rest)
 	case readers[name]:
+		// cat $(printf '.e%sv' n): which file is read is decided by a
+		// command the analyzer does not run.
+		for _, x := range rest {
+			if x.subst {
+				a.f.opaque(name + " reads a file whose name is computed by a command")
+				break
+			}
+		}
 		a.secretArgs(name, operands(name, rest))
+	}
+	// Dumping the environment exposes every credential passed in env vars.
+	if name == "printenv" || (name == "export" || name == "declare" || name == "typeset") && hasShortOrLong(rest, "px", "") {
+		a.f.secret(name + " dumps the environment")
 	}
 }
 
@@ -609,15 +651,17 @@ func (a *shellAnalyzer) interpreter(name string, rest []arg, in stdinSource) {
 func (a *shellAnalyzer) secretArgs(name string, rest []arg) {
 	candidates := rest
 	if copyLike[name] {
-		// The last operand is the destination: writing a secret is not reading one.
-		last := -1
-		for i, x := range rest {
-			if !strings.HasPrefix(x.text, "-") {
-				last = i
-			}
-		}
-		if last >= 0 {
-			candidates = append(append([]arg{}, rest[:last]...), rest[last+1:]...)
+		// The destination is written, not read: drop it — the -t DIR value
+		// when given (cp -t /tmp/out .env reads .env), else the last
+		// operand.
+		ops, dest, _ := copyOperands(name, rest)
+		switch {
+		case dest != "":
+			candidates = ops
+		case len(ops) > 0:
+			candidates = ops[:len(ops)-1]
+		default:
+			candidates = nil
 		}
 	}
 	for i, x := range candidates {
