@@ -49,7 +49,7 @@ func tokenShell(cmd string, depth int, o Options) Facts {
 	f := a.f
 	if a.sawDB {
 		for _, t := range a.texts {
-			if destructiveSQL.MatchString(t) {
+			if destructiveSQL.MatchString(t) || destructiveSQLStatement(t) {
 				f.destructive("destructive SQL sent to a database client")
 				break
 			}

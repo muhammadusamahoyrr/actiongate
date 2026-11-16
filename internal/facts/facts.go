@@ -311,7 +311,28 @@ func IsSecretPath(p string) bool {
 	}
 	switch base {
 	case ".env", ".netrc", ".pgpass", ".git-credentials", ".npmrc", ".pypirc",
-		"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", "credentials.json":
+		"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", "credentials.json",
+		".envrc", "credentials.toml", "application_default_credentials.json", "credentials.db",
+		"access_tokens.db", "terraform.tfstate", ".vault-token", ".boto", ".s3cfg", "secrets.yaml", "secrets.yml":
+		return true
+	}
+	// Terraform variables hold provider credentials.
+	if strings.HasSuffix(base, ".tfvars") || strings.HasSuffix(base, ".tfvars.json") {
+		return true
+	}
+	// A process's environment (/proc/self/environ, /proc/123/environ).
+	if base == "environ" && strings.Contains("/"+p, "/proc/") {
+		return true
+	}
+	// Tool configs that embed credentials: ~/.kube/config, ~/.docker/
+	// config.json, ~/.cargo/credentials, ~/.config/gcloud, ~/.azure.
+	dir := path.Base(path.Dir(p))
+	switch {
+	case dir == ".kube" && (base == "config" || strings.HasSuffix(base, ".yaml") || strings.HasSuffix(base, ".yml")):
+		return true
+	case dir == ".docker" && base == "config.json":
+		return true
+	case strings.Contains("/"+p, "/.config/gcloud/") || strings.Contains("/"+p, "/.azure/") || strings.Contains("/"+p, "/.aws/"):
 		return true
 	}
 	if strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".env") {
@@ -352,7 +373,10 @@ func globMatchesSecret(pattern string) bool {
 			literals++
 		}
 	}
-	if literals < 3 {
+	// A short pattern (*, s*) is a directory sweep, not a target — except
+	// a dotfile glob (.e*, .*), which exists to reach hidden files like
+	// .env.
+	if literals < 3 && !strings.HasPrefix(base, ".") {
 		return false
 	}
 	for _, name := range secretNames {

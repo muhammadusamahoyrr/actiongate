@@ -188,8 +188,12 @@ re-running `protect` with a different `-pack`.
 | Pack | Secrets reads | Destructive shell | Everything else |
 |---|---|---|---|
 | `claude-code` (default) | denied (file tools, shell, PowerShell) | waits for approval, however it is spelled (`rm -fr`, `find -delete`, force-push, `DROP TABLE`, `bash -c '…'`, …); code the analyzer cannot inspect also waits | allowed |
-| `paranoid` | denied | **every** shell command and file mutation waits | reads allowed |
-| `relaxed` | denied | only catastrophes wait (`rm -rf /`, `dd`, `mkfs`, `DROP DATABASE`, …) | allowed |
+| `paranoid` | denied (any spelling) | **every** shell/PowerShell command, file change and other tool waits | only reads (`Read`, `Grep`, `Glob`, `LS`) pass |
+| `relaxed` | denied (any spelling) | waits for approval, however it is spelled; code the analyzer cannot inspect runs | allowed |
+
+All three packs are built on the analyzer's facts (`facts.secret_access`,
+`facts.destructive`, …), not on matching command text, so every spelling
+of the same action gets the same decision in every pack.
 
 All packs deny secrets reads — that is not negotiable in any pack.
 

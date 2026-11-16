@@ -1,17 +1,10 @@
 {
-  "default_decision": "allow",
+  "default_decision": "requires_approval",
   "rules": [
     {
-      "id": "deny-secrets-native",
-      "description": "Block Read/Edit/Write on secret and credential files",
-      "condition": "tool_name in [\"Read\", \"Edit\", \"Write\", \"NotebookEdit\"] && has(params.file_path) && (params.file_path.contains(\".env\") || params.file_path.contains(\"id_rsa\") || params.file_path.contains(\"id_ed25519\") || params.file_path.contains(\".pem\") || params.file_path.contains(\".ssh\") || params.file_path.contains(\".aws\") || params.file_path.contains(\"credentials\"))",
-      "decision": "deny",
-      "risk_classification": "secrets"
-    },
-    {
-      "id": "deny-secrets-grep",
-      "description": "Block grepping inside secret material",
-      "condition": "tool_name == \"Grep\" && has(params.path) && (params.path.contains(\".env\") || params.path.contains(\".ssh\") || params.path.contains(\".aws\") || params.path.contains(\".pem\"))",
+      "id": "deny-secrets",
+      "description": "Block reading, copying, sending or planting credentials, however the command is spelled",
+      "condition": "facts.secret_access",
       "decision": "deny",
       "risk_classification": "secrets"
     },
@@ -23,18 +16,11 @@
       "risk_classification": "self_tamper"
     },
     {
-      "id": "approve-all-bash",
-      "description": "Every shell command waits for a human",
-      "condition": "tool_name == \"Bash\" && has(params.command)",
-      "decision": "requires_approval",
-      "risk_classification": "shell"
-    },
-    {
-      "id": "approve-mutations",
-      "description": "Every file mutation waits for a human",
-      "condition": "tool_name in [\"Edit\", \"Write\", \"NotebookEdit\"]",
-      "decision": "requires_approval",
-      "risk_classification": "mutation"
+      "id": "allow-reads",
+      "description": "Reading and searching non-secret files passes; everything else — every shell command, every file change, every other tool — waits for a human (the default)",
+      "condition": "tool_name in [\"Read\", \"Grep\", \"Glob\", \"LS\"]",
+      "decision": "allow",
+      "risk_classification": "read"
     }
   ]
 }
