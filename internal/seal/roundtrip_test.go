@@ -123,7 +123,8 @@ func genNumber(rng *rand.Rand) float64 {
 	case 1:
 		return float64(rng.Int63n(1<<62)) * float64(1-2*rng.Intn(2))
 	default:
-		return math.Float64frombits(rng.Uint64()&^(0x7ff<<52) | uint64(rng.Intn(0x7fe)+1)<<52) // finite
+		exp := rng.Uint64()%0x7fe + 1 // 1..0x7fe: finite, never NaN or Inf
+		return math.Float64frombits(rng.Uint64()&^(0x7ff<<52) | exp<<52)
 	}
 }
 
