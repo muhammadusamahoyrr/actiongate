@@ -21,6 +21,9 @@ func TestValidateSlack(t *testing.T) {
 		"slack_channel":        {SlackBotToken: "xoxb", SlackSigningSecret: "s"},
 		"slack_bot_token":      {SlackSigningSecret: "s"},
 	}
+	if err := (Config{SlackApprovers: []string{"U1"}}).validateSlack(); err == nil {
+		t.Error("an approver list without Slack configured was accepted")
+	}
 	for missing, c := range bad {
 		err := c.validateSlack()
 		if err == nil {

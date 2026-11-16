@@ -40,18 +40,75 @@ func mintToken(secret []byte, tenantID, approvalID uuid.UUID) (token string, tok
 	if approvalID == uuid.Nil {
 		return "", nil, errors.New("token: approval request id is required")
 	}
+	token = canonicalToken(secret, tokenPayload(secret, tenantID, approvalID))
+	sum := sha256.Sum256([]byte(token))
+	return token, sum[:], nil
+}
+
+func tokenPayload(secret []byte, tenantID, approvalID uuid.UUID) []byte {
 	payload := make([]byte, 0, 16+32)
 	payload = append(payload, tenantID[:]...)
 	seed := hmac.New(sha256.New, secret)
 	seed.Write([]byte("AGTOKSEED1"))
 	seed.Write(approvalID[:])
-	payload = seed.Sum(payload)
-	mac := tokenMAC(secret, payload)
-	token = tokenPrefix +
+	return seed.Sum(payload)
+}
+
+func canonicalToken(secret, payload []byte) string {
+	return tokenPrefix +
 		base64.RawURLEncoding.EncodeToString(payload) + "." +
-		base64.RawURLEncoding.EncodeToString(mac)
-	sum := sha256.Sum256([]byte(token))
-	return token, sum[:], nil
+		base64.RawURLEncoding.EncodeToString(tokenMAC(secret, payload))
+}
+
+// Slack-bound tokens (audit M5). The token in a Slack button is visible to
+// everyone who can read the channel. If it also worked at the
+// /approval/callback endpoint, anyone holding it could resolve the
+// approval there, past the Slack approver allowlist. So Slack gets the same
+// payload signed under its own tag ("agts_"), which only the Slack
+// endpoint accepts. Both forms map to the same stored hash: the database
+// holds one token per approval either way.
+const slackTokenPrefix = "agts_"
+
+func mintSlackToken(secret []byte, tenantID, approvalID uuid.UUID) (string, error) {
+	if _, _, err := mintToken(secret, tenantID, approvalID); err != nil {
+		return "", err
+	}
+	payload := tokenPayload(secret, tenantID, approvalID)
+	return slackTokenPrefix +
+		base64.RawURLEncoding.EncodeToString(payload) + "." +
+		base64.RawURLEncoding.EncodeToString(slackTokenMAC(secret, payload)), nil
+}
+
+// parseSlackToken accepts a Slack-bound token, or a canonical one (jobs
+// queued by older builds delivered those to Slack), and returns the
+// storage hash of the canonical form.
+func parseSlackToken(secret []byte, token string) (tenantID uuid.UUID, tokenHash []byte, err error) {
+	rest, ok := strings.CutPrefix(token, slackTokenPrefix)
+	if !ok {
+		return parseToken(secret, token)
+	}
+	payloadPart, macPart, ok := strings.Cut(rest, ".")
+	if !ok {
+		return uuid.Nil, nil, ErrTokenInvalid
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(payloadPart)
+	if err != nil || len(payload) != 16+32 {
+		return uuid.Nil, nil, ErrTokenInvalid
+	}
+	mac, err := base64.RawURLEncoding.DecodeString(macPart)
+	if err != nil || !hmac.Equal(mac, slackTokenMAC(secret, payload)) {
+		return uuid.Nil, nil, ErrTokenInvalid
+	}
+	copy(tenantID[:], payload[:16])
+	sum := sha256.Sum256([]byte(canonicalToken(secret, payload)))
+	return tenantID, sum[:], nil
+}
+
+func slackTokenMAC(secret, payload []byte) []byte {
+	m := hmac.New(sha256.New, secret)
+	m.Write([]byte("AGTOKSLACK1"))
+	m.Write(payload)
+	return m.Sum(nil)
 }
 
 // parseToken authenticates the token's HMAC and returns the embedded tenant

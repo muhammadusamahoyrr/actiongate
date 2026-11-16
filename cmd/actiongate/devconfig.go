@@ -47,6 +47,9 @@ type devConfig struct {
 	SlackBotToken      string `json:"slack_bot_token,omitempty"`
 	SlackSigningSecret string `json:"slack_signing_secret,omitempty"`
 	SlackChannel       string `json:"slack_channel,omitempty"`
+	// SlackApprovers are the Slack user ids allowed to approve; empty means
+	// anyone who can click in the channel.
+	SlackApprovers []string `json:"slack_approvers,omitempty"`
 }
 
 func devConfigPath() (string, error) {

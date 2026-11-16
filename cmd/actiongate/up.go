@@ -152,8 +152,9 @@ actiongate is up.
   %s; it holds the database password, so it is not printed here):
       verify -tenant %s -key %s=%s
 
-  Approvals: without Slack configured, pending actions are approved via
-  POST %s/approval/callback (see README "Try it", step 6).
+  Approvals: without Slack configured, approve or deny pending actions
+  from a terminal with "actiongate approvals list", or POST to
+  %s/approval/callback (docs/GUIDE.md, section 6).
 %s`, cfgPath, cfg.TenantID, cfg.epochKeyID(), epochPub, cfg.ServerURL, serviceHint())
 
 	if alreadyRunning {
@@ -203,6 +204,7 @@ func runControlPlane(ctx context.Context, cfg *devConfig, log *slog.Logger) erro
 		SlackBotToken:      firstNonEmpty(cfg.SlackBotToken, os.Getenv("AG_SLACK_BOT_TOKEN")),
 		SlackSigningSecret: firstNonEmpty(cfg.SlackSigningSecret, os.Getenv("AG_SLACK_SIGNING_SECRET")),
 		SlackChannel:       firstNonEmpty(cfg.SlackChannel, os.Getenv("AG_SLACK_CHANNEL")),
+		SlackApprovers:     slackApprovers(cfg.SlackApprovers, os.Getenv("AG_SLACK_APPROVERS")),
 	})
 }
 
@@ -466,4 +468,13 @@ func selfTest(ctx context.Context, gw *gateway.Gateway, statePath string) error 
 	default:
 		return err
 	}
+}
+
+// slackApprovers is the dev.json list, or else AG_SLACK_APPROVERS split on
+// commas.
+func slackApprovers(fromConfig []string, fromEnv string) []string {
+	if len(fromConfig) > 0 {
+		return fromConfig
+	}
+	return controlplane.SplitList(fromEnv)
 }

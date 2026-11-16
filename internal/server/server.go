@@ -53,6 +53,9 @@ type Server struct {
 	// SlackSigningSecret enables the /slack/interaction endpoint; empty
 	// leaves it unregistered.
 	SlackSigningSecret string
+	// SlackApprovers, when non-empty, are the only Slack user ids whose
+	// clicks resolve an approval (audit M5). Empty: anyone in the channel.
+	SlackApprovers []string
 	// Version and EpochKeyIDs enrich /healthz with the composite health report.
 	Version     string
 	EpochKeyIDs []string
@@ -430,7 +433,12 @@ func (s *Server) handleApprovalCallback(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
 		return
 	}
-	res, err := s.Approvals.Resolve(r.Context(), body.Token, body.Decision, body.ApproverID, body.Reason)
+	approver, err := callbackApprover(body.ApproverID)
+	if err != nil {
+		http.Error(w, `{"error":"bad approver_id"}`, http.StatusBadRequest)
+		return
+	}
+	res, err := s.Approvals.Resolve(r.Context(), body.Token, body.Decision, approver, body.Reason)
 	switch {
 	case err == nil:
 		w.Header().Set("Content-Type", "application/json")
@@ -452,9 +460,7 @@ func (s *Server) handleApprovalCallback(w http.ResponseWriter, r *http.Request) 
 // streamFor gives each tenant one default audit stream in V1: a stable
 // UUIDv5 of the tenant id, so every component derives the same stream
 // without coordination.
-func streamFor(tenantID uuid.UUID) uuid.UUID {
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("actiongate-stream:"+tenantID.String()))
-}
+func streamFor(tenantID uuid.UUID) uuid.UUID { return domain.StreamFor(tenantID) }
 
 func stateEnum(s domain.State) actiongatev1.ActionState {
 	switch s {
@@ -536,4 +542,25 @@ func (s *Server) logger() *slog.Logger {
 		return s.Logger
 	}
 	return slog.Default()
+}
+
+// callbackApprover records who the callback's caller says approved (audit
+// M5). The callback token proves the request is for a real pending
+// approval, not who sent it, so the claimed name is kept under its own
+// "callback:" namespace: it can never pass for an identity a channel
+// verified, such as "slack:U123".
+func callbackApprover(claimed string) (string, error) {
+	claimed = strings.TrimSpace(claimed)
+	if claimed == "" {
+		return "callback:unspecified", nil
+	}
+	if len(claimed) > 128 {
+		return "", errors.New("approver_id longer than 128 bytes")
+	}
+	for _, r := range claimed {
+		if r < ' ' || r == 0x7f {
+			return "", errors.New("approver_id contains control characters")
+		}
+	}
+	return "callback:" + claimed, nil
 }

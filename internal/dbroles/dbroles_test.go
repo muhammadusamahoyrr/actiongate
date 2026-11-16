@@ -106,6 +106,58 @@ func TestRolesEnforceRLSAndAppendOnly(t *testing.T) {
 		t.Error("app role rewrote an append-only snapshot")
 	}
 
+	// The audit trail (audit H8): the app may append events, and nothing
+	// else. Each statement runs in its own tenant-scoped transaction.
+	inTenant := func(q string) error {
+		tx, err := app.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `select set_config('app.tenant_id', $1, true)`, tenant.String()); err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(ctx, q)
+		return err
+	}
+	if err := inTenant(`insert into audit_events (id, tenant_id, stream_id, event_type, attested_by, metadata, recorded_at)
+		values (gen_random_uuid(), current_setting('app.tenant_id')::uuid, gen_random_uuid(), 'ActionCreated', 'control_plane', '{}', now())`); err != nil {
+		t.Errorf("app role cannot append an audit event: %v", err)
+	}
+	for _, q := range []string{
+		`delete from audit_epochs`,
+		`update audit_epochs set anchored_at = now()`,
+		`insert into audit_epochs (epoch_id, tenant_id, stream_id, first_sequence, last_sequence, root_hash, signature, key_id, sealed_at)
+		 values (gen_random_uuid(), current_setting('app.tenant_id')::uuid, gen_random_uuid(), 1, 1, '\x00', '\x00', 'k', now())`,
+		`update audit_events set event_hash = '\x00'`,
+		`delete from audit_events`,
+	} {
+		if err := inTenant(q); err == nil {
+			t.Errorf("app role was allowed: %s", q)
+		}
+	}
+	// Even the owner cannot delete or truncate sealed epochs: the guard
+	// triggers refuse, and only a superuser disabling them gets past.
+	if _, err := owner.Exec(ctx,
+		`insert into audit_epochs (epoch_id, tenant_id, stream_id, first_sequence, last_sequence, root_hash, signature, key_id, sealed_at)
+		 values (gen_random_uuid(), $1, gen_random_uuid(), 1, 1, '\x00', '\x00', 'k', now())`, tenant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `update audit_epochs set anchored_at = now()`); err != nil {
+		t.Errorf("setting anchored_at once was refused: %v", err)
+	}
+	for _, q := range []string{
+		`delete from audit_epochs`,
+		`update audit_epochs set root_hash = '\x01'`,
+		`update audit_epochs set anchored_at = now()`, // only once
+		`truncate audit_epochs`,
+		`truncate audit_events cascade`,
+	} {
+		if _, err := owner.Exec(ctx, q); err == nil {
+			t.Errorf("owner was allowed: %s", q)
+		}
+	}
+
 	// Neither role owns anything: an owner could attach triggers that a
 	// later superuser migration would run. Ownership handed out by hand is
 	// reclaimed at the next Ensure.

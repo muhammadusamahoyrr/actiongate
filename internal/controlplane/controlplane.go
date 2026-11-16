@@ -59,6 +59,8 @@ type Config struct {
 	SlackBotToken      string
 	SlackSigningSecret string
 	SlackChannel       string
+	// SlackApprovers limits who can approve from Slack (user ids).
+	SlackApprovers []string
 
 	Logger *slog.Logger // defaults to slog.Default()
 }
@@ -175,14 +177,19 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	var port notify.Port = notify.LogPort{}
+	mint := approvals.CallbackToken
 	if cfg.SlackBotToken != "" {
 		port = notify.SlackPort{
 			Client:         slack.New(cfg.SlackBotToken),
 			DefaultChannel: cfg.SlackChannel,
 		}
+		// Slack buttons carry Slack-bound tokens: anyone who can read the
+		// channel sees them, and they must not work at /approval/callback,
+		// past the approver allowlist (audit M5).
+		mint = approvals.SlackToken
 		log.Info("slack notifications enabled", "default_channel", cfg.SlackChannel)
 	}
-	workers, err := queue.NewWorkers(pool, port, approvals.CallbackToken)
+	workers, err := queue.NewWorkers(pool, port, mint)
 	if err != nil {
 		return fmt.Errorf("workers: %w", err)
 	}
@@ -227,6 +234,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Pool: pool, Orchestrator: orch, Approvals: approvals, Coordinator: coordinator,
 		GrantKeyID: grantSigner.KeyID(), GrantPublicKey: grantPub, Logger: log,
 		SlackSigningSecret: cfg.SlackSigningSecret,
+		SlackApprovers:     cfg.SlackApprovers,
 		EpochKeyIDs:        []string{epochSigner.KeyID()},
 	}
 	httpServer := &http.Server{
@@ -287,9 +295,27 @@ func (cfg Config) validateSlack() error {
 			missing = append(missing, name)
 		}
 	}
-	if len(have) == 0 || len(missing) == 0 {
+	if len(missing) == 0 {
+		return nil
+	}
+	if len(have) == 0 {
+		if len(cfg.SlackApprovers) > 0 {
+			return errors.New("slack_approvers is set but Slack approvals are not configured (set slack_bot_token, slack_signing_secret and slack_channel)")
+		}
 		return nil
 	}
 	return fmt.Errorf("slack approvals are half-configured: %s set but %s missing (set all three, or none)",
 		strings.Join(have, ", "), strings.Join(missing, ", "))
+}
+
+// SplitList parses a comma-separated setting (such as AG_SLACK_APPROVERS)
+// into its non-empty, trimmed entries.
+func SplitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

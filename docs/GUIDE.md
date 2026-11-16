@@ -310,6 +310,14 @@ Approval requests appear as messages with **Approve** / **Deny** buttons.
 Clicks are signature-verified against Slack's signing secret and recorded
 with the Slack user's identity.
 
+By default anyone who can click in the channel can decide. To limit that,
+list the Slack user ids allowed to approve: set `slack_approvers` in
+`dev.json` (a JSON list) or `AG_SLACK_APPROVERS="U012AB3CD,U045EF6GH"`.
+Clicks from anyone else are refused and the approval stays pending. The
+token in a Slack button only works through Slack's signed endpoint, so
+copying it out of the message and posting it to `/approval/callback` does
+not get around the list.
+
 ### Without Slack — `actiongate approvals`
 
 While a governed tool call waits (up to 5 minutes), open a terminal:
@@ -351,11 +359,21 @@ Approvals are resolved with compare-and-swap: two concurrent approvers
 can't double-resolve, and a replayed token is rejected without changing
 the outcome.
 
+The token proves the request is for a real pending approval, not who sent
+it. So the `approver_id` you send is recorded as a claim, `callback:you`,
+and never as an identity a channel verified, such as `slack:U012AB3CD`.
+
 ## 7. Verifying the audit log
 
 Everything actiongate does is appended to a per-tenant audit stream that a
 background sealer numbers, hash-chains (SHA-256), and seals into epochs
-signed by a key the application does not hold.
+signed with an Ed25519 epoch key. Database triggers make the event log
+append-only: events cannot be deleted, and their content cannot change once
+written. The epoch private key, though, is derived from a seed in
+the control plane's config file, so anyone who can read that file can sign
+epochs too. Keep it readable only by the account that runs the control
+plane. While the agent runs as that same OS user, the built-in
+`__builtin_actiongate_secrets__` rule is what keeps the agent from reading it.
 
 ```bash
 verify -database-url "$AG_DATABASE_URL" -tenant <TENANT_ID> \
@@ -366,7 +384,10 @@ verify -database-url "$AG_DATABASE_URL" -tenant <TENANT_ID> \
 `verify` trusts nothing but the public key: it re-derives every event
 hash, epoch root, and signature from the raw database rows. If anyone —
 including a database administrator — edits history, `ok` flips to `false`
-and the exact tampered event is named. Exit codes: `0` verified, non-zero
+and the exact tampered event is named. This holds for anyone who cannot
+sign with the epoch key (see above). Events newer than the last sealed
+epoch are counted in `unsealed_tail` and are not yet covered by a
+signature. Exit codes: `0` verified, non-zero
 otherwise, so it drops straight into CI or a cron job.
 
 To see this property demonstrated safely:
@@ -384,6 +405,38 @@ chain is never touched.
 > **Keep your epoch key seed safe and stable.** Regenerating the epoch
 > signing seed under the same key ID makes previously sealed epochs
 > unverifiable. `actiongate up` persists the seeds for you.
+
+### What verify checks
+
+- **Every request is bound.** Each `ActionCreated` event records the
+  request fingerprint: a hash of the agent, the tool and the exact
+  parameters. `verify` recomputes it from the stored request, so changing
+  what the agent asked for after the fact is caught (`requests_checked`
+  counts these). Events from before this field existed are skipped.
+- **Policy changes are audited.** Each new policy version writes a
+  `PolicyChanged` event with its version and content hash.
+- **Deleted epochs are caught.** Sealed epochs are append-only in the
+  database. If epochs are removed anyway (only a superuser can switch the
+  guard off), the events they sealed are left pointing at nothing, and
+  `verify` reports them.
+
+### Catching a shortened chain: `-checkpoint`
+
+A signed chain proves what it contains, not how long it used to be.
+Someone able to remove the newest epochs *and* the events they sealed
+leaves a shorter chain that still verifies. To catch that, have `verify`
+remember each stream's last sealed epoch (its `head`):
+
+```bash
+verify -database-url "$AG_DATABASE_URL" -tenant <TENANT_ID> \
+  -key epoch-1=<EPOCH_PUBLIC_KEY_BASE64> -checkpoint /safe/place/ag-checkpoint.json
+```
+
+Each run checks that the head recorded last time is still in the chain,
+then records the new head. The file is only updated after a clean run.
+Keep it somewhere the database host cannot write, such as another
+machine, a write-once bucket, or a cron job's own storage. Otherwise
+whoever can cut the chain can rewrite the file too.
 
 ## 8. Running unattended
 
@@ -484,6 +537,7 @@ the signed outcome receipt.
 | `AG_GRANT_KEY_ID` / `AG_EPOCH_KEY_ID` | no (`grant-1` / `epoch-1`) | Names of the signing keys. When you rotate a seed, give it a new id: epochs sealed under the old key still verify with `verify -key <old-id>=<old-pub> -key <new-id>=<new-pub>`. A new grant key means re-enrolling gateways. In `dev.json`: `grant_key_id` / `epoch_key_id` |
 | `AG_APPROVER_DEFAULT` | no (`team-lead`) | Default approver target |
 | `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals. Set all three or none: the control plane refuses to start with only some, since approvals would otherwise sit unanswerable |
+| `AG_SLACK_APPROVERS` | no | comma-separated Slack user ids allowed to approve (default: anyone in the channel). Needs the three Slack settings above |
 
 ### Files on disk
 
