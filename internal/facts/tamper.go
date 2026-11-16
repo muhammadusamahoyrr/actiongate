@@ -639,7 +639,11 @@ func ReachesActiongateConfig(p string) bool {
 		return true
 	}
 	switch np {
-	case "/root", "/var/root": // root's home on Linux and macOS
+	case "/root", "/var/root", "/private/var/root": // root's home on Linux and macOS
+		return true
+	}
+	// ~name is that user's home directory.
+	if t := strings.TrimRight(raw, `/\`); strings.HasPrefix(t, "~") && !strings.ContainsAny(t, `/\`) {
 		return true
 	}
 	return false
@@ -649,10 +653,11 @@ func ReachesActiongateConfig(p string) bool {
 // relative to an unknown working directory, it can reach a home directory
 // and from there the config directory.
 func climbsOnly(p string) bool {
-	np := strings.Trim(slash(strings.Trim(strings.TrimSpace(p), `"'`)), "/")
-	if np == "" {
+	raw := slash(strings.Trim(strings.TrimSpace(p), `"'`))
+	if raw == "" {
 		return false
 	}
+	np := path.Clean(raw) // ../. and ./.. are ..; ../../. is ../..
 	for _, part := range strings.Split(np, "/") {
 		if part != ".." {
 			return false
@@ -679,17 +684,56 @@ func recursiveSearch(name string, rest []arg) bool {
 		if hasShortOrLong(rest, "rR", "--recursive") || hasShortOrLong(rest, "", "--dereference-recursive") {
 			return true
 		}
-		// -d recurse, -drecurse, --directories=recurse (or an abbreviation
-		// such as --dir=recurse) recurse too.
+		// -d ACTION / --directories=ACTION with ACTION "recurse" recurses
+		// too, in every spelling: -d recurse, -drecurse, -nd recurse,
+		// --directories recurse, --dir=recurse.
 		for i, x := range rest {
-			t := x.text
-			switch {
-			case t == "-d" && i+1 < len(rest) && rest[i+1].text == "recurse",
-				t == "-drecurse",
-				strings.HasSuffix(t, "=recurse") && isLongPrefix(strings.TrimSuffix(t, "=recurse"), "--directories"):
+			if grepDirectoriesValue(rest, i) == "recurse" {
 				return true
+			}
+			if x.text == "--" {
+				break
 			}
 		}
 	}
 	return false
+}
+
+// grepDirectoriesValue returns the value given to grep's -d/--directories
+// option at rest[i], or "" when rest[i] does not set it.
+func grepDirectoriesValue(rest []arg, i int) string {
+	t := rest[i].text
+	next := func() string {
+		if i+1 < len(rest) {
+			return rest[i+1].text
+		}
+		return ""
+	}
+	if strings.HasPrefix(t, "--") {
+		name, value, hasValue := strings.Cut(t, "=")
+		if len(name) < 4 || !isLongPrefix(name, "--directories") && name != "--directories" {
+			return ""
+		}
+		if hasValue {
+			return value
+		}
+		return next()
+	}
+	if !isShortCluster(t) {
+		return ""
+	}
+	// Walk the cluster: a letter that takes a value swallows the rest of
+	// the word, so -ed is -e with pattern "d", not -d.
+	for j := 1; j < len(t); j++ {
+		switch t[j] {
+		case 'd':
+			if j+1 < len(t) {
+				return t[j+1:]
+			}
+			return next()
+		case 'A', 'B', 'C', 'D', 'e', 'f', 'm':
+			return ""
+		}
+	}
+	return ""
 }

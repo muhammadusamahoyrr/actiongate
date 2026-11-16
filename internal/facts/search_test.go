@@ -119,3 +119,28 @@ func TestSearchRecursionSpellingsAndClimbs(t *testing.T) {
 		}
 	}
 }
+
+// Second round of spellings from the automated review.
+func TestSearchSpellingsRoundTwo(t *testing.T) {
+	for _, cmd := range []string{
+		"grep --directories recurse token_secret ~/.config",
+		"grep -nd recurse token_secret ~/.config",
+		"grep -ndrecurse token_secret ~/.config",
+		"grep -r token_secret ~bob",
+		"grep -r token_secret ~root/",
+		"grep -r token_secret /private/var/root",
+	} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); !f.SelfSecret {
+			t.Errorf("%q: self_secret not set (%v)", cmd, f.Reasons)
+		}
+	}
+	for _, cmd := range []string{"grep -r token_secret ../.", "grep -r token_secret ./..", "rg token_secret ../../."} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); !f.Opaque && !f.SelfSecret {
+			t.Errorf("%q: neither opaque nor self_secret (%v)", cmd, f.Reasons)
+		}
+	}
+	// -ed is -e with pattern "d": not a directories option.
+	if f := Derive("Bash", map[string]any{"command": "grep -ed recurse ~/.config"}); f.SelfSecret {
+		t.Errorf("grep -ed (pattern d) treated as recursive: %v", f.Reasons)
+	}
+}
