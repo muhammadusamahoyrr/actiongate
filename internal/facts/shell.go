@@ -768,13 +768,14 @@ func (a *shellAnalyzer) switchUser(name string, rest []arg) {
 				}
 			}
 		}
+		long := isLongPrefix(t, "--command") || isLongPrefix(t, "--session-command") // --com, --session-c
 		switch {
-		case t == "-c" || t == "--command" || t == "--session-command":
+		case t == "-c" || long && !strings.Contains(t, "="):
 			if i+1 < len(rest) {
 				code(rest[i+1].text, rest[i+1].lit)
 			}
 			return
-		case strings.HasPrefix(t, "--command=") || strings.HasPrefix(t, "--session-command="):
+		case long:
 			_, v, _ := strings.Cut(t, "=")
 			code(v, rest[i].lit)
 			return
@@ -817,30 +818,70 @@ func kubeVerb(rest []arg) string {
 // remoteCommand judges the command ssh runs on the remote host: it is run
 // there, but destroying data remotely is still destroying data.
 func (a *shellAnalyzer) remoteCommand(rest []arg) {
-	valueOpts := "BbcDEeFIiJLlmOoPpQRSWw"
-	i := 0
-	for ; i < len(rest); i++ {
-		t := rest[i].text
-		if t == "--" {
+	const valueOpts = "BbcDEeFIiJLlmOoPpQRSWw"
+	// skipOpts skips ssh options (with their values) from i; ssh accepts
+	// options both before and after the host. -o values that run a LOCAL
+	// command (ProxyCommand, LocalCommand, KnownHostsCommand, Match exec)
+	// are judged as shell.
+	skipOpts := func(i int) int {
+		for i < len(rest) {
+			t := rest[i].text
+			if t == "--" {
+				return i + 1
+			}
+			if !isShortCluster(t) {
+				return i
+			}
+			for j := 1; j < len(t); j++ {
+				if strings.IndexByte(valueOpts, t[j]) < 0 {
+					continue
+				}
+				v, next := t[j+1:], i+1
+				if v == "" && i+1 < len(rest) {
+					v, next = rest[i+1].text, i+2
+				}
+				if t[j] == 'o' {
+					a.sshOption(v)
+				}
+				i = next - 1
+				break
+			}
 			i++
-			break
 		}
-		if !isShortCluster(t) {
-			break
-		}
-		if last := t[len(t)-1]; len(t) == 2 && strings.IndexByte(valueOpts, last) >= 0 {
-			i++ // -p 22, -i key, -o Opt=x
-		}
+		return i
 	}
-	if i+1 >= len(rest) {
+	i := skipOpts(0)
+	if i >= len(rest) {
+		return
+	}
+	i = skipOpts(i + 1) // past the host
+	if i >= len(rest) {
 		return // host only: an interactive session
 	}
-	code, ok := joinLiteral(rest[i+1:])
+	code, ok := joinLiteral(rest[i:])
 	if !ok {
 		a.f.opaque("ssh runs a remote command built at run time")
 		return
 	}
 	a.f.merge(shellDepth(code, a.depth+1, a.opts))
+}
+
+// sshOption judges an ssh -o Key=Value (or "Key Value") whose value is a
+// command ssh runs locally.
+func (a *shellAnalyzer) sshOption(opt string) {
+	key, val, ok := strings.Cut(opt, "=")
+	if !ok {
+		key, val, _ = strings.Cut(strings.TrimSpace(opt), " ")
+	}
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "proxycommand", "localcommand", "knownhostscommand", "match":
+		if v := strings.TrimSpace(val); v != "" && !strings.EqualFold(v, "none") {
+			a.f.merge(shellDepth(strings.TrimPrefix(strings.TrimPrefix(v, "exec "), "Exec "), a.depth+1, a.opts))
+			if strings.EqualFold(strings.TrimSpace(key), "match") {
+				a.f.opaque("ssh Match exec runs a local command")
+			}
+		}
+	}
 }
 
 // awk can run shell commands: system("..."), print | "cmd", "cmd" | getline.
@@ -850,10 +891,14 @@ func (a *shellAnalyzer) awk(rest []arg) {
 	for i := 0; i < len(rest); i++ {
 		t := rest[i].text
 		switch {
-		case t == "-f" || t == "--file" || strings.HasPrefix(t, "--file=") || t == "-i" || t == "--include":
-			a.f.opaque("awk runs a program from a file")
+		// Program text from a file, an include or a loaded extension:
+		// unreadable here. Long forms with GNU abbreviations, short forms
+		// alone or with an attached value (-fFILE, -EFILE, -iFILE, -lLIB).
+		case isLongPrefix(t, "--file") || isLongPrefix(t, "--exec") || isLongPrefix(t, "--include") || isLongPrefix(t, "--load"),
+			isShortCluster(t) && strings.ContainsAny(t[1:2], "fEil"):
+			a.f.opaque("awk runs a program from a file or extension")
 			return
-		case t == "-e" || t == "--source":
+		case t == "-e" || isLongPrefix(t, "--source") && !strings.Contains(t, "="):
 			if i+1 < len(rest) {
 				if !rest[i+1].lit {
 					a.f.opaque("awk program built at run time")
@@ -862,9 +907,13 @@ func (a *shellAnalyzer) awk(rest []arg) {
 				programs = append(programs, rest[i+1].text)
 				i++
 			}
-		case strings.HasPrefix(t, "--source="):
-			programs = append(programs, strings.TrimPrefix(t, "--source="))
-		case t == "-v" || t == "-F" || t == "--assign" || t == "--field-separator":
+		case isLongPrefix(t, "--source"):
+			_, v, _ := strings.Cut(t, "=")
+			programs = append(programs, v)
+		case isShortCluster(t) && t[1] == 'e' && len(t) > 2:
+			programs = append(programs, t[2:]) // -eTEXT
+		case t == "-v" || t == "-F" || isLongPrefix(t, "--assign") && !strings.Contains(t, "=") ||
+			isLongPrefix(t, "--field-separator") && !strings.Contains(t, "="):
 			i++
 		case strings.HasPrefix(t, "-"):
 		default:
