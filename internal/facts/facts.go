@@ -221,9 +221,15 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 	// The detectors set SelfSecret from the path they resolved. As a
 	// second, fail-closed net: a secret access whose raw text also names
 	// actiongate's config directory counts too (it can only add a deny).
-	// Only what executes can approve: commands, scripts they run, other
-	// tools' requests. Writing or reading a file that merely mentions the
-	// endpoint (docs, this repo's own tests) is not an approval.
+	// Scripts the command runs, attached by the gateway (write-then-run,
+	// audit H2): judged as if their text had been typed inline.
+	if _, ok := params[ScriptsKey]; ok {
+		f.merge(deriveScripts(params, o))
+	}
+	// Only what executes can approve: commands, scripts they run (their
+	// attached text is scanned too), other tools' requests. Writing or
+	// reading a file that merely mentions the endpoint (docs, this repo's
+	// own tests) is not an approval.
 	if !fileTools[tool] {
 		if _, ok := findString(params, 0, approvesSomething); ok {
 			f.SelfApproval = true

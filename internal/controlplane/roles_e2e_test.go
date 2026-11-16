@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,6 +124,22 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 		ToolName: "Read", Params: map[string]any{"file_path": "/home/x/.config/actiongate/dev.json"}, Environment: "default", Wait: 15 * time.Second,
 	}); err == nil {
 		t.Error("reading actiongate's dev.json was allowed")
+	}
+
+	// Write-then-run (audit H2): a script the agent wrote is read by the
+	// gateway, carried to the control plane, and judged there — rm -rf ~
+	// inside it needs approval, which nobody gives here, so it times out.
+	scriptDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(scriptDir, "cleanup.sh"), []byte("#!/bin/sh\nrm -rf ~\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = gw.Check(ctx, gateway.CheckInput{
+		AgentID: "e2e", SessionID: uuid.NewString(), NativeRequestID: uuid.NewString(),
+		ToolName: "Bash", Params: map[string]any{"command": "bash cleanup.sh"}, Environment: "default",
+		Wait: 2 * time.Second, Cwd: scriptDir,
+	})
+	if !errors.Is(err, gateway.ErrTimedOut) {
+		t.Errorf("bash cleanup.sh (rm -rf ~ inside): err = %v, want it held for approval (timed out)", err)
 	}
 
 	// Audit H6/H10: a held action's approval message shows the command,

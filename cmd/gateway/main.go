@@ -117,6 +117,7 @@ func cmdCheck(ctx context.Context, args []string) int {
 	env := fs.String("env", "default", "environment")
 	wait := fs.Duration("wait", 10*time.Minute, "how long to wait for a decision")
 	stateFlag := fs.String("state", "", "state file path")
+	cwd := fs.String("cwd", "", "directory the action runs in (scripts it runs are read from here); default: current directory")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -145,7 +146,7 @@ func cmdCheck(ctx context.Context, args []string) int {
 
 	res, err := gw.Check(ctx, gateway.CheckInput{
 		AgentID: *agent, SessionID: *session, NativeRequestID: *requestID,
-		ToolName: *tool, Params: params, Environment: *env, Wait: *wait,
+		ToolName: *tool, Params: params, Environment: *env, Wait: *wait, Cwd: *cwd,
 	})
 	// Persist the pending receipt regardless of outcome shape.
 	if saveErr := gw.State.SaveReceipts(path); saveErr != nil {

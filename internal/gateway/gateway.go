@@ -142,6 +142,10 @@ type CheckInput struct {
 	// Wait bounds how long to poll for a human decision; zero means a
 	// single submit with no polling.
 	Wait time.Duration
+	// Cwd is the directory the action runs in, so the scripts a command
+	// executes can be read and judged (AttachScripts). Empty means this
+	// process's working directory.
+	Cwd string
 }
 
 type CheckResult struct {
@@ -160,7 +164,8 @@ func (g *Gateway) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 	if err != nil {
 		return CheckResult{}, err
 	}
-	params, err := structpb.NewStruct(in.Params)
+	// Attach the text of any script the command runs (write-then-run).
+	params, err := structpb.NewStruct(AttachScripts(in.Params, in.ToolName, in.Cwd))
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("params: %w", err)
 	}

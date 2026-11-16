@@ -112,6 +112,9 @@ type shellAnalyzer struct {
 	// (cwdSecretDir), so relative reads after it are its secrets.
 	cwdSecret    bool
 	cwdSecretDir string
+	// collect: also list the local scripts commands run (ScriptsRun).
+	collect bool
+	scripts []Script
 }
 
 // stdinSource: piped means content the analyzer cannot see (a pipe);
@@ -233,6 +236,9 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 	args = unwrap(args)
 	if len(args) == 0 {
 		return
+	}
+	if a.collect {
+		a.collectScript(args)
 	}
 	if !args[0].lit {
 		a.f.opaque("command name is computed at run time")
