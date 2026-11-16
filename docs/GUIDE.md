@@ -197,6 +197,23 @@ of the same action gets the same decision in every pack.
 
 All packs deny secrets reads — that is not negotiable in any pack.
 
+**What the analyzer cannot promise.** It judges the action in front of it.
+
+- **Scripts can change after the check.** When a command runs a script
+  (`bash x.sh`, `python job.py`, `go run x.go`), the gateway reads the
+  script's text at check time, and the decision covers that text. A
+  process the agent started earlier could rewrite the file between the
+  check and the run, but such a process can already do anything directly,
+  unchecked. Treat long-running background processes the agent starts as
+  outside the firewall.
+- **Pattern matching has limits.** The self-approval and secret-path
+  checks match text. A URL or path assembled at run time can get past
+  them.
+- **The real boundary is the OS account.** The agent can reach the token
+  secret in `dev.json` only because it runs as the same OS user as the
+  control plane. Running the control plane under its own account is what
+  closes that.
+
 ## 5. Writing custom policies
 
 A policy is JSON: a `default_decision` plus an ordered list of rules.
@@ -416,7 +433,7 @@ chain is never touched.
 - **Policy changes are audited.** Each new policy version writes a
   `PolicyChanged` event with its version and content hash.
 - **Deleted epochs are caught.** Sealed epochs are append-only in the
-  database. If epochs are removed anyway (only a superuser can switch the
+  database. If epochs are removed anyway (only the tables' owner or a superuser can switch the
   guard off), the events they sealed are left pointing at nothing, and
   `verify` reports them.
 
@@ -534,8 +551,9 @@ the signed outcome receipt.
 | `AG_TOKEN_SECRET` | yes (≥ 32 bytes) | HMAC secret for approval callback tokens |
 | `AG_LISTEN` | no (`127.0.0.1:8091`) | Control plane listen address. Loopback by default: it serves plain HTTP with an unauthenticated enrollment and approval callback. A host-less `:PORT` is narrowed to `127.0.0.1`; to listen on the network name the host (`0.0.0.0:8091`) and put TLS in front |
 | `AG_GRANT_KEY_SEED` / `AG_EPOCH_KEY_SEED` | recommended | Base64 32-byte signing seeds; ephemeral (with a loud warning) if unset |
-| `AG_GRANT_KEY_ID` / `AG_EPOCH_KEY_ID` | no (`grant-1` / `epoch-1`) | Names of the signing keys. When you rotate a seed, give it a new id: epochs sealed under the old key still verify with `verify -key <old-id>=<old-pub> -key <new-id>=<new-pub>`. A new grant key means re-enrolling gateways. In `dev.json`: `grant_key_id` / `epoch_key_id` |
+| `AG_GRANT_KEY_ID` / `AG_EPOCH_KEY_ID` | no (`grant-1` / `epoch-1`) | Names of the signing keys. When you rotate a seed, give it a new id: epochs sealed under the old key still verify with `verify -key <old-id>=<old-pub> -key <new-id>=<new-pub>`. List the old epoch id in `AG_EPOCH_RETIRED_KEY_IDS` (comma-separated) so health checks and `doctor` still expect its epochs. A new grant key means re-enrolling gateways. In `dev.json`: `grant_key_id` / `epoch_key_id` / `epoch_retired_key_ids` |
 | `AG_APPROVER_DEFAULT` | no (`team-lead`) | Default approver target |
+| `AG_HEALTH_TENANT_ID` | no | Tenant whose state `/healthz` reports (tenant, signing keys, sealer). The control plane runs as a row-level-security-bound role that sees no tenant rows without one. `actiongate up` and the service set it to your tenant |
 | `AG_SLACK_BOT_TOKEN` / `AG_SLACK_SIGNING_SECRET` / `AG_SLACK_CHANNEL` | no | Slack approvals. Set all three or none: the control plane refuses to start with only some, since approvals would otherwise sit unanswerable |
 | `AG_SLACK_APPROVERS` | no | comma-separated Slack user ids allowed to approve (default: anyone in the channel). Needs the three Slack settings above |
 

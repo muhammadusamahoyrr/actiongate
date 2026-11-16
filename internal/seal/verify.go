@@ -277,8 +277,5 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil, err
 	}
-	if v == nil {
-		v = map[string]any{}
-	}
-	return json.Marshal(v)
+	return fingerprint.CanonicalParams(v)
 }

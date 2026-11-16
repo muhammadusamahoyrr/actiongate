@@ -11,7 +11,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -164,8 +163,13 @@ func (g *Gateway) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 	if err != nil {
 		return CheckResult{}, err
 	}
-	// Attach the text of any script the command runs (write-then-run).
-	params, err := structpb.NewStruct(AttachScripts(in.Params, in.ToolName, in.Cwd))
+	// Attach the text of any script the command runs (write-then-run). The
+	// attached params are what the control plane fingerprints, so the
+	// grant check below must use the very same map: recomputing from the
+	// bare params never matched, and every allowed script run was refused.
+	// Reading the scripts once also binds the grant to the text judged.
+	in.Params = AttachScripts(in.Params, in.ToolName, in.Cwd)
+	params, err := structpb.NewStruct(in.Params)
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("params: %w", err)
 	}
@@ -368,7 +372,7 @@ func canonicalParams(params map[string]any) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("params: %w", err)
 	}
-	return json.Marshal(st.AsMap())
+	return fingerprint.CanonicalParams(st.AsMap())
 }
 
 func statusFor(s string) (actiongatev1.ExecutionStatus, error) {

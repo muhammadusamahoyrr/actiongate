@@ -485,6 +485,27 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 			}
 		}
 		a.secretArgs(name, operands(name, rest))
+		if recursiveSearch(name, rest) {
+			for _, x := range operands(name, rest) {
+				if strings.HasPrefix(x.text, "-") {
+					continue
+				}
+				if ReachesActiongateConfig(x.text) {
+					a.f.selfSecretSearch(name + " searches " + x.text + ", which contains actiongate's config directory")
+					break
+				}
+				// A root named only by a variable ("$HOME", "$DIR") may be a
+				// home or config directory; which, the analyzer cannot tell.
+				if strings.Trim(x.text, "\x00/\\") == "" && strings.Contains(x.text, "\x00") {
+					a.f.opaque(name + " searches a directory named by a variable")
+					break
+				}
+				if climbsOnly(x.text) {
+					a.f.opaque(name + " searches " + x.text + ", which may be a home directory")
+					break
+				}
+			}
+		}
 	}
 	// Dumping the environment exposes every credential passed in env vars.
 	if name == "printenv" || (name == "export" || name == "declare" || name == "typeset") && hasShortOrLong(rest, "px", "") {

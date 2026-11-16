@@ -137,7 +137,8 @@ func TestRolesEnforceRLSAndAppendOnly(t *testing.T) {
 		}
 	}
 	// Even the owner cannot delete or truncate sealed epochs: the guard
-	// triggers refuse, and only a superuser disabling them gets past.
+	// triggers refuse, and only the owner or a superuser disabling them
+	// gets past (which verify then reports).
 	if _, err := owner.Exec(ctx,
 		`insert into audit_epochs (epoch_id, tenant_id, stream_id, first_sequence, last_sequence, root_hash, signature, key_id, sealed_at)
 		 values (gen_random_uuid(), $1, gen_random_uuid(), 1, 1, '\x00', '\x00', 'k', now())`, tenant); err != nil {

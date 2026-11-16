@@ -119,8 +119,11 @@ func (o *Orchestrator) Submit(ctx context.Context, in SubmitInput) (SubmitResult
 		Params:      params,
 	})
 	if err != nil {
-		// Fail closed (plan §16): an erroring policy rejects the call; the
-		// action stays Created and the error is surfaced, never bypassed.
+		// Fail closed (plan §16): an erroring policy rejects the call and
+		// the error is surfaced, never bypassed. The action is recorded as
+		// denied, not left in Created: a second hook for the same tool
+		// call (same request id) would otherwise wait on it until timeout.
+		o.failClosed(ctx, in, actionID, domain.StateCreated, "__evaluation_failed__", "policy evaluation failed (fail closed)")
 		return SubmitResult{}, fmt.Errorf("%w: %w", ErrPolicyFailed, err)
 	}
 
@@ -151,6 +154,7 @@ func (o *Orchestrator) Submit(ctx context.Context, in SubmitInput) (SubmitResult
 	case policy.Allow:
 		authorized, err := o.Coordinator.Authorize(ctx, in.TenantID, actionID, in.StreamID)
 		if err != nil {
+			o.failClosed(ctx, in, actionID, domain.StateEvaluated, decision.MatchedRuleID, "could not issue the execution grant (fail closed)")
 			return SubmitResult{}, err
 		}
 		return SubmitResult{
@@ -171,6 +175,7 @@ func (o *Orchestrator) Submit(ctx context.Context, in SubmitInput) (SubmitResult
 				params, facts.Derive(in.ToolName, params).Reasons),
 		})
 		if err != nil {
+			o.failClosed(ctx, in, actionID, domain.StateEvaluated, decision.MatchedRuleID, "could not open the approval request (fail closed)")
 			return SubmitResult{}, err
 		}
 		return SubmitResult{
@@ -200,6 +205,38 @@ func (o *Orchestrator) Submit(ctx context.Context, in SubmitInput) (SubmitResult
 			MatchedRuleID: decision.MatchedRuleID, Explanation: explanation,
 		}, nil
 	}
+}
+
+// failClosed records an action whose Submit failed part-way as denied, so
+// it ends in a terminal state instead of staying in Created or Evaluated
+// for good. From Created it first records the evaluation (decision deny),
+// since the state machine reaches Denied only through Evaluated. Best
+// effort: the expected versions make it a no-op if the action already
+// moved on, and the caller still returns the original error.
+func (o *Orchestrator) failClosed(ctx context.Context, in SubmitInput, actionID uuid.UUID, from domain.State, ruleID, explanation string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	if from == domain.StateCreated {
+		if err := transition.Apply(ctx, o.Pool, transition.Request{
+			TenantID: in.TenantID, ActionID: actionID,
+			From: domain.StateCreated, To: domain.StateEvaluated, ExpectedVersion: 0,
+			Event: transition.Event{
+				StreamID: in.StreamID, Type: domain.EventPolicyEvaluated, AttestedBy: domain.AttestedByControlPlane,
+				Metadata: map[string]any{"decision": string(policy.Deny), "matched_rule_id": ruleID, "explanation": explanation},
+			},
+		}); err != nil {
+			return
+		}
+	}
+	_ = transition.Apply(ctx, o.Pool, transition.Request{
+		TenantID: in.TenantID, ActionID: actionID,
+		From: domain.StateEvaluated, To: domain.StateDenied, ExpectedVersion: 1,
+		Event: transition.Event{
+			StreamID: in.StreamID, Type: domain.EventActionDenied, AttestedBy: domain.AttestedByControlPlane,
+			Metadata: map[string]any{"matched_rule_id": ruleID, "explanation": explanation},
+		},
+	})
 }
 
 // Status is the poll/resume path (plan §9: the gateway polls, no held

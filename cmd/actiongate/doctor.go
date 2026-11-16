@@ -50,7 +50,7 @@ func cmdDoctor(_ []string) int {
 	rep := health.Check(ctx, pool, health.Options{
 		Version:     version,
 		TenantID:    cfg.TenantID,
-		EpochKeyIDs: []string{cfg.epochKeyID()},
+		EpochKeyIDs: append([]string{cfg.epochKeyID()}, cfg.EpochRetiredKeyIDs...),
 	})
 
 	ok := true

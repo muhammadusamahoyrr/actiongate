@@ -40,7 +40,9 @@ type devConfig struct {
 	// ("grant-1", "epoch-1"). Set a new id when rotating a seed.
 	GrantKeyID string `json:"grant_key_id,omitempty"`
 	EpochKeyID string `json:"epoch_key_id,omitempty"`
-	TenantID   string `json:"tenant_id,omitempty"`
+	// EpochRetiredKeyIDs: earlier epoch key ids, kept after a rotation.
+	EpochRetiredKeyIDs []string `json:"epoch_retired_key_ids,omitempty"`
+	TenantID           string   `json:"tenant_id,omitempty"`
 
 	// Optional Slack approvals. Set here (not env) so the Windows service —
 	// which never sees your shell environment — picks them up too.

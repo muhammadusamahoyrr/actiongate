@@ -608,3 +608,159 @@ func (f *Facts) selfTamper(reason string) {
 	f.SelfTamper = true
 	f.add(reason)
 }
+
+// ReachesActiongateConfig reports whether a recursive search rooted at p
+// could descend into actiongate's config directory, and so print its
+// secrets: p is the directory's root (Roaming, ~/.config, Application
+// Support), an ancestor of it (AppData, Library, a home directory, users,
+// a drive or filesystem root), or a variable naming one of those. Grep on
+// %APPDATA% used to read dev.json with no fact raised, because only the
+// file itself and its directory were recognised.
+func ReachesActiongateConfig(p string) bool {
+	raw := strings.ToLower(strings.Trim(strings.TrimSpace(p), `"'`))
+	if raw == "" {
+		return false
+	}
+	switch strings.TrimRight(raw, `/\`) {
+	case "~", "$home", "${home}", "$env:home", "$env:userprofile", "%userprofile%", "%homepath%",
+		"$env:appdata", "%appdata%", "$xdg_config_home", "${xdg_config_home}", "$env:localappdata":
+		return true
+	}
+	np := strings.TrimRight(normPath(p), "/")
+	if np == "" || len(np) == 2 && np[1] == ':' {
+		return true // "/" or a drive root
+	}
+	switch path.Base(np) {
+	case "roaming", "appdata", ".config", "application support", "library", "users", "home":
+		return true
+	}
+	switch path.Base(path.Dir(np)) {
+	case "users", "home": // a home directory: c:/users/x, /home/x, /Users/x
+		return true
+	}
+	switch np {
+	case "/root", "/var/root", "/private/var/root": // root's home on Linux and macOS
+		return true
+	}
+	// ~name is that user's home directory.
+	if t := strings.TrimRight(raw, `/\`); strings.HasPrefix(t, "~") && !strings.ContainsAny(t, `/\`) {
+		return true
+	}
+	return false
+}
+
+// climbsOnly reports whether p is made only of ".." steps (.., ../..):
+// relative to an unknown working directory, it can reach a home directory
+// and from there the config directory.
+func climbsOnly(p string) bool {
+	raw := slash(strings.Trim(strings.TrimSpace(p), `"'`))
+	if raw == "" {
+		return false
+	}
+	np := path.Clean(raw) // ../. and ./.. are ..; ../../. is ../..
+	for _, part := range strings.Split(np, "/") {
+		if part != ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// selfSecretSearch flags a recursive search that can reach actiongate's
+// config directory.
+func (f *Facts) selfSecretSearch(reason string) {
+	f.secret(reason)
+	f.SelfSecret = true
+	f.add("could read actiongate's own secrets (searches its config directory)")
+}
+
+// recursiveSearch reports whether a reader command searches directories
+// recursively: rg/ag/ack always do, grep only with -r/-R/--recursive.
+func recursiveSearch(name string, rest []arg) bool {
+	switch name {
+	case "rg", "ag", "ack":
+		return true
+	case "grep", "egrep", "fgrep":
+		// Every argument is scanned, past any "--": that word may be an
+		// option's value (grep -e -- -r ...), and telling the two apart
+		// would mean modelling every option. Scanning on only fails closed.
+		for i, x := range rest {
+			t := x.text
+			if isShortCluster(t) && strings.ContainsAny(shortFlagsBeforeValue(t), "rR") ||
+				strings.HasPrefix(t, "--") && (isLongPrefix(t, "--recursive") || isLongPrefix(t, "--dereference-recursive")) {
+				return true
+			}
+			// An option word built from a variable may be -r: $FLAGS,
+			// -n$X, and ${D}r with D="-" (any word starting with an
+			// unknown part could start with a dash).
+			if strings.Contains(t, "\x00") && (strings.HasPrefix(t, "-") || strings.HasPrefix(t, "\x00")) {
+				return true
+			}
+			// -d ACTION / --directories=ACTION: anything but read or skip
+			// (or their abbreviations) is treated as recurse, so spellings
+			// and values the analyzer cannot read fail closed.
+			if v := grepDirectoriesValue(rest, i); v != "" && !grepDirectoriesHarmless(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// grepDirectoriesHarmless reports whether a -d/--directories value is one
+// that does not recurse: skip or read, or an unambiguous abbreviation of
+// them ("r" and "re" are ambiguous with recurse, and grep rejects them).
+func grepDirectoriesHarmless(v string) bool {
+	return strings.HasPrefix("skip", v) || len(v) >= 3 && strings.HasPrefix("read", v)
+}
+
+// shortFlagsBeforeValue returns the flag letters of a short cluster up to
+// the first letter that takes a value (the rest of the word is that value:
+// in -erx, "rx" is the pattern).
+func shortFlagsBeforeValue(cluster string) string {
+	for j := 1; j < len(cluster); j++ {
+		if strings.IndexByte("ABCDdefm", cluster[j]) >= 0 {
+			return cluster[1:j]
+		}
+	}
+	return cluster[1:]
+}
+
+// grepDirectoriesValue returns the value given to grep's -d/--directories
+// option at rest[i], or "" when rest[i] does not set it.
+func grepDirectoriesValue(rest []arg, i int) string {
+	t := rest[i].text
+	next := func() string {
+		if i+1 < len(rest) {
+			return rest[i+1].text
+		}
+		return ""
+	}
+	if strings.HasPrefix(t, "--") {
+		name, value, hasValue := strings.Cut(t, "=")
+		if len(name) < 4 || !isLongPrefix(name, "--directories") && name != "--directories" {
+			return ""
+		}
+		if hasValue {
+			return value
+		}
+		return next()
+	}
+	if !isShortCluster(t) {
+		return ""
+	}
+	// Walk the cluster: a letter that takes a value swallows the rest of
+	// the word, so -ed is -e with pattern "d", not -d.
+	for j := 1; j < len(t); j++ {
+		switch t[j] {
+		case 'd':
+			if j+1 < len(t) {
+				return t[j+1:]
+			}
+			return next()
+		case 'A', 'B', 'C', 'D', 'e', 'f', 'm':
+			return ""
+		}
+	}
+	return ""
+}
