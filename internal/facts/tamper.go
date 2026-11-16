@@ -690,8 +690,10 @@ func recursiveSearch(name string, rest []arg) bool {
 				strings.HasPrefix(t, "--") && (isLongPrefix(t, "--recursive") || isLongPrefix(t, "--dereference-recursive")) {
 				return true
 			}
-			// An option word built from a variable ($FLAGS) may be -r.
-			if strings.Contains(t, "\x00") && (strings.HasPrefix(t, "-") || strings.Trim(t, "\x00") == "") {
+			// An option word built from a variable may be -r: $FLAGS,
+			// -n$X, and ${D}r with D="-" (any word starting with an
+			// unknown part could start with a dash).
+			if strings.Contains(t, "\x00") && (strings.HasPrefix(t, "-") || strings.HasPrefix(t, "\x00")) {
 				return true
 			}
 			// -d ACTION / --directories=ACTION: anything but read or skip

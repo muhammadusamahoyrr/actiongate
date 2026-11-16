@@ -177,6 +177,7 @@ func TestSearchSpellingsRoundFour(t *testing.T) {
 		"grep -d RECURSE token_secret ~/.config",
 		"grep $FLAGS token_secret ~/.config",
 		"grep -n$X token_secret ~/.config",
+		"grep ${D}r token_secret ~/.config",
 	} {
 		if f := Derive("Bash", map[string]any{"command": cmd}); !f.SelfSecret {
 			t.Errorf("%q: self_secret not set (%v)", cmd, f.Reasons)
