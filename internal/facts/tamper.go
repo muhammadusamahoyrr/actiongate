@@ -681,22 +681,36 @@ func recursiveSearch(name string, rest []arg) bool {
 	case "rg", "ag", "ack":
 		return true
 	case "grep", "egrep", "fgrep":
-		if hasShortOrLong(rest, "rR", "--recursive") || hasShortOrLong(rest, "", "--dereference-recursive") {
-			return true
-		}
-		// -d ACTION / --directories=ACTION with ACTION "recurse" recurses
-		// too, in every spelling: -d recurse, -drecurse, -nd recurse,
-		// --directories recurse, --dir=recurse.
+		// Every argument is scanned, past any "--": that word may be an
+		// option's value (grep -e -- -r ...), and telling the two apart
+		// would mean modelling every option. Scanning on only fails closed.
 		for i, x := range rest {
-			if grepDirectoriesValue(rest, i) == "recurse" {
+			t := x.text
+			if isShortCluster(t) && strings.ContainsAny(shortFlagsBeforeValue(t), "rR") ||
+				strings.HasPrefix(t, "--") && (isLongPrefix(t, "--recursive") || isLongPrefix(t, "--dereference-recursive")) {
 				return true
 			}
-			if x.text == "--" {
-				break
+			// -d ACTION / --directories=ACTION: "recurse" in any spelling
+			// grep accepts (-d recurse, -nd rec, --dir=recu), or a value
+			// the analyzer cannot read.
+			if v := grepDirectoriesValue(rest, i); v != "" && (strings.Contains(v, "\x00") || len(v) >= 3 && strings.HasPrefix("recurse", v)) {
+				return true
 			}
 		}
 	}
 	return false
+}
+
+// shortFlagsBeforeValue returns the flag letters of a short cluster up to
+// the first letter that takes a value (the rest of the word is that value:
+// in -erx, "rx" is the pattern).
+func shortFlagsBeforeValue(cluster string) string {
+	for j := 1; j < len(cluster); j++ {
+		if strings.IndexByte("ABCDdefm", cluster[j]) >= 0 {
+			return cluster[1:j]
+		}
+	}
+	return cluster[1:]
 }
 
 // grepDirectoriesValue returns the value given to grep's -d/--directories

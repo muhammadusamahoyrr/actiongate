@@ -144,3 +144,28 @@ func TestSearchSpellingsRoundTwo(t *testing.T) {
 		t.Errorf("grep -ed (pattern d) treated as recursive: %v", f.Reasons)
 	}
 }
+
+// Third round: grep's abbreviated option values, unreadable values, and an
+// option hidden behind a "--" that is really a pattern.
+func TestSearchSpellingsRoundThree(t *testing.T) {
+	for _, cmd := range []string{
+		"grep -d rec token_secret ~/.config",
+		"grep --dir=recu token_secret ~/.config",
+		"grep -d $MODE token_secret ~/.config",
+		"grep -e -- -r ~/.config",
+		"grep -nr token_secret ~/.config",
+	} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); !f.SelfSecret {
+			t.Errorf("%q: self_secret not set (%v)", cmd, f.Reasons)
+		}
+	}
+	for _, cmd := range []string{
+		"grep -d read token_secret ~/.config/app.conf", // not recursive
+		"grep -d skip x ~/.config",
+		"grep -erx ~/notes", // -e takes "rx" as the pattern
+	} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); f.SelfSecret {
+			t.Errorf("%q flagged self_secret: %v", cmd, f.Reasons)
+		}
+	}
+}
