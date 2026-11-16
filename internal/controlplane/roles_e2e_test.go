@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -98,6 +99,7 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 			DatabaseURL: appDSN, SealerDatabaseURL: sealerDSN, SkipQueueMigrate: true,
 			Listen: addr, TokenSecret: tokenSecret,
 			GrantKeySeed: randomBytes(t, 32), EpochKeySeed: epochSeed,
+			HealthTenantID: tenant.String(),
 		})
 	}()
 	serverURL := "http://" + addr
@@ -144,6 +146,19 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 	})
 	if !errors.Is(err, gateway.ErrTimedOut) {
 		t.Errorf("bash cleanup.sh (rm -rf ~ inside): err = %v, want it held for approval (timed out)", err)
+	}
+	// And a harmless script is allowed end to end: the grant the gateway
+	// receives must verify against the params it submitted, scripts
+	// included (this used to fail the params_hash check every time).
+	if err := os.WriteFile(filepath.Join(scriptDir, "hello.sh"), []byte("#!/bin/sh\necho hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gw.Check(ctx, gateway.CheckInput{
+		AgentID: "e2e", SessionID: uuid.NewString(), NativeRequestID: uuid.NewString(),
+		ToolName: "Bash", Params: map[string]any{"command": "bash hello.sh"}, Environment: "default",
+		Wait: 15 * time.Second, Cwd: scriptDir,
+	}); err != nil {
+		t.Errorf("bash hello.sh (harmless script): %v, want allowed", err)
 	}
 
 	// Audit H6/H10: a held action's approval message shows the command,
@@ -221,6 +236,40 @@ func TestControlPlaneRunsAsLeastPrivilegeRoles(t *testing.T) {
 		case <-time.After(time.Second):
 		}
 	}
+	// /healthz reads real tenant, key and sealer state even though the
+	// control plane runs as the RLS-bound app role.
+	checkHealthz(t, serverURL)
+
+	// A policy that fails to evaluate refuses the call, and a repeat of the
+	// same tool call (same request id, as two matching hooks send) is
+	// refused at once instead of waiting on an action stuck in Created.
+	failing, err := admin.CreateTenant(ctx, owner, []byte(`{"default_decision":"allow","rules":[
+		{"id":"needs-command","condition":"params.command.startsWith('x')","decision":"deny"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ftoken, err := admin.NewEnrollmentToken(ctx, owner, failing, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fstate, err := gateway.Enroll(ctx, nil, serverURL, ftoken, "roles-e2e-failing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fgw := &gateway.Gateway{State: fstate}
+	same := gateway.CheckInput{
+		AgentID: "e2e", SessionID: uuid.NewString(), NativeRequestID: "toolu_e2e_same",
+		ToolName: "Read", Params: map[string]any{"file_path": "README.md"}, Environment: "default", Wait: 20 * time.Second,
+	}
+	if _, err := fgw.Check(ctx, same); err == nil {
+		t.Error("a policy that fails to evaluate allowed the call")
+	}
+	started := time.Now()
+	_, err = fgw.Check(ctx, same)
+	if !errors.Is(err, gateway.ErrDenied) || time.Since(started) > 5*time.Second {
+		t.Errorf("repeat of a failed call: err = %v after %s, want ErrDenied at once", err, time.Since(started))
+	}
+
 	cancel()
 	// Wait for the control plane, and with it the sealer, to stop, so the
 	// chain holds still while it is checked and tampered with.
@@ -298,6 +347,32 @@ func verifyAuditCoverage(t *testing.T, owner *pgxpool.Pool, tenant uuid.UUID, ep
 	}
 	if report.Contains(head) {
 		t.Error("chain still contains the deleted head; a checkpoint would not catch the cut")
+	}
+}
+
+func checkHealthz(t *testing.T, serverURL string) {
+	t.Helper()
+	resp, err := http.Get(serverURL + "/healthz") //nolint:gosec,noctx // test loopback URL
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatalf("healthz: %v: %s", err, raw)
+	}
+	for _, k := range []string{"tenant", "signing_keys", "sealer"} {
+		var c struct {
+			Healthy bool   `json:"healthy"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(top[k], &c); err != nil {
+			t.Fatalf("healthz %s: %v: %s", k, err, raw)
+		}
+		if !c.Healthy {
+			t.Errorf("healthz %s unhealthy under the app role: %s", k, c.Message)
+		}
 	}
 }
 

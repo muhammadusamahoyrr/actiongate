@@ -56,6 +56,10 @@ type Config struct {
 	// EpochRetiredKeyIDs are earlier epoch key ids: epochs they signed are
 	// still expected, so health does not flag them after a rotation.
 	EpochRetiredKeyIDs []string
+	// HealthTenantID is the tenant /healthz reports on. The control plane
+	// runs as a row-level-security-bound role, which sees no tenant rows
+	// without one: tenant, signing-key and sealer health would read empty.
+	HealthTenantID string
 
 	ApproverDefault string // defaults to "team-lead"
 
@@ -239,6 +243,7 @@ func Run(ctx context.Context, cfg Config) error {
 		SlackSigningSecret: cfg.SlackSigningSecret,
 		SlackApprovers:     cfg.SlackApprovers,
 		EpochKeyIDs:        append([]string{epochSigner.KeyID()}, cfg.EpochRetiredKeyIDs...),
+		HealthTenantID:     cfg.HealthTenantID,
 	}
 	httpServer := &http.Server{
 		Addr:              listen,

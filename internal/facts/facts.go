@@ -200,6 +200,8 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 	case "Grep":
 		if p := str("path"); IsSecretPath(p) {
 			f.secretPath(p, "grep inside secret path "+path.Base(slash(p)))
+		} else if ReachesActiongateConfig(p) {
+			f.selfSecretSearch("grep over " + p + ", which contains actiongate's config directory")
 		}
 		if g := str("glob"); g != "" && globMatchesSecret(g) {
 			f.secret("grep glob covers secret files: " + g)
@@ -251,10 +253,20 @@ var approvalsCLI = regexp.MustCompile(`(?i)actiongate(\.exe)?["']?\s+(-\S+\s+)*a
 // purpose broad (it can only add a deny); a spelling it misses still meets
 // the CLI's own refusal to run without an interactive terminal.
 func approvesSomething(s string) bool {
-	l := strings.ToLower(s)
-	return strings.Contains(l, "/approval/callback") || strings.Contains(l, "/slack/interaction") ||
-		approvalsCLI.MatchString(s)
+	if approvalsCLI.MatchString(s) {
+		return true
+	}
+	// Shells join adjacent quoted pieces and drop escapes, so
+	// /approval/call""back, /approval/call'b'ack and /approval/call\back
+	// all reach the endpoint: compare with quotes and escapes removed.
+	// Still a text match, so a speed bump: a URL assembled at run time
+	// gets past it, which is why the token secret must live where the
+	// agent cannot read it (see docs/GUIDE.md).
+	l := strings.ToLower(quoteStripper.Replace(s))
+	return strings.Contains(l, "/approval/callback") || strings.Contains(l, "/slack/interaction")
 }
+
+var quoteStripper = strings.NewReplacer(`"`, "", `'`, "", `\`, "", "`", "", "^", "")
 
 // findString returns the first string anywhere in v (maps, slices, nested)
 // that match accepts. Depth is bounded so a hostile payload cannot recurse

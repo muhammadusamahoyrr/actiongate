@@ -608,3 +608,55 @@ func (f *Facts) selfTamper(reason string) {
 	f.SelfTamper = true
 	f.add(reason)
 }
+
+// ReachesActiongateConfig reports whether a recursive search rooted at p
+// could descend into actiongate's config directory, and so print its
+// secrets: p is the directory's root (Roaming, ~/.config, Application
+// Support), an ancestor of it (AppData, Library, a home directory, users,
+// a drive or filesystem root), or a variable naming one of those. Grep on
+// %APPDATA% used to read dev.json with no fact raised, because only the
+// file itself and its directory were recognised.
+func ReachesActiongateConfig(p string) bool {
+	raw := strings.ToLower(strings.Trim(strings.TrimSpace(p), `"'`))
+	if raw == "" {
+		return false
+	}
+	switch strings.TrimRight(raw, `/\`) {
+	case "~", "$home", "${home}", "$env:home", "$env:userprofile", "%userprofile%", "%homepath%",
+		"$env:appdata", "%appdata%", "$xdg_config_home", "${xdg_config_home}", "$env:localappdata":
+		return true
+	}
+	np := strings.TrimRight(normPath(p), "/")
+	if np == "" || len(np) == 2 && np[1] == ':' {
+		return true // "/" or a drive root
+	}
+	switch path.Base(np) {
+	case "roaming", "appdata", ".config", "application support", "library", "users", "home":
+		return true
+	}
+	switch path.Base(path.Dir(np)) {
+	case "users", "home": // a home directory: c:/users/x, /home/x, /Users/x
+		return true
+	}
+	return false
+}
+
+// selfSecretSearch flags a recursive search that can reach actiongate's
+// config directory.
+func (f *Facts) selfSecretSearch(reason string) {
+	f.secret(reason)
+	f.SelfSecret = true
+	f.add("could read actiongate's own secrets (searches its config directory)")
+}
+
+// recursiveSearch reports whether a reader command searches directories
+// recursively: rg/ag/ack always do, grep only with -r/-R/--recursive.
+func recursiveSearch(name string, rest []arg) bool {
+	switch name {
+	case "rg", "ag", "ack":
+		return true
+	case "grep", "egrep", "fgrep":
+		return hasShortOrLong(rest, "rR", "--recursive") || hasShortOrLong(rest, "", "--dereference-recursive")
+	}
+	return false
+}

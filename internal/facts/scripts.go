@@ -225,6 +225,17 @@ func (a *shellAnalyzer) collectScript(args []arg) {
 			add(p, kind, "")
 			a.markUncertain(unsure)
 		}
+	case name == "go" && len(rest) > 1 && rest[0].text == "run":
+		// go run x.go [y.go]: the named files are the program. A package
+		// path (go run ./cmd/x, go run .) is a directory and is not read.
+		for _, x := range rest[1:] {
+			if x.text == "--" {
+				break
+			}
+			if !strings.HasPrefix(x.text, "-") && strings.HasSuffix(strings.ToLower(x.text), ".go") {
+				add(x.text, "go", "")
+			}
+		}
 	case name == "npm" || name == "pnpm" || name == "yarn" || name == "bun":
 		if s, ok := npmScriptName(name, rest); ok {
 			add("package.json", "npm", s)
@@ -412,7 +423,7 @@ func scriptKind(p, via, content string) string {
 		return "shell"
 	case "powershell":
 		return "powershell"
-	case "python", "node", "perl", "ruby", "php", "deno", "bun":
+	case "python", "node", "perl", "ruby", "php", "deno", "bun", "go":
 		return "code"
 	}
 	if via == "exec" && strings.EqualFold(path.Ext(slash(p)), ".ps1") {

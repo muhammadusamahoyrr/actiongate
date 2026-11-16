@@ -60,7 +60,10 @@ type Server struct {
 	// Version and EpochKeyIDs enrich /healthz with the composite health report.
 	Version     string
 	EpochKeyIDs []string
-	Now         func() time.Time
+	// HealthTenantID scopes the tenant-level /healthz checks (see
+	// controlplane.Config.HealthTenantID).
+	HealthTenantID string
+	Now            func() time.Time
 	// Logger receives internal errors in full; callers see only a reference.
 	Logger *slog.Logger
 }
@@ -288,6 +291,16 @@ func (s *Server) submitResponse(ctx context.Context, tenantID uuid.UUID, res orc
 					Grant:    envelopeMessage(res.GrantEnvelope),
 				},
 			}}
+		case domain.StateDenied, domain.StateExpired, domain.StateCancelled, domain.StateSupersededByPolicy:
+			// A repeat of a refused request (same tool call, same request
+			// id) is refused the same way, so the hook reports a denial
+			// (exit 2) rather than an unexplained error.
+			return &actiongatev1.SubmitActionResponse{Result: &actiongatev1.SubmitActionResponse_Denied{
+				Denied: &actiongatev1.DeniedAction{
+					ActionId:    res.ActionID.String(),
+					Explanation: "this tool call was already refused (" + strings.ToLower(string(res.State)) + ")",
+				},
+			}}
 		case domain.StatePendingApproval, domain.StateCreated, domain.StateEvaluated, domain.StateApproved, domain.StateExecuting:
 			return &actiongatev1.SubmitActionResponse{Result: &actiongatev1.SubmitActionResponse_Pending{
 				Pending: &actiongatev1.PendingAction{
@@ -397,7 +410,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rep := health.Check(ctx, s.Pool, health.Options{Version: s.Version, EpochKeyIDs: s.EpochKeyIDs})
+	rep := health.Check(ctx, s.Pool, health.Options{Version: s.Version, EpochKeyIDs: s.EpochKeyIDs, TenantID: s.HealthTenantID})
 	comp := func(c dbruntime.ComponentHealth) healthzComponent {
 		return healthzComponent{Healthy: c.Healthy, Message: c.Message}
 	}
