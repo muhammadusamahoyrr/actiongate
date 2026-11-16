@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 
 	"github.com/slack-go/slack"
 
@@ -15,7 +16,8 @@ import (
 // request is authenticated twice: Slack's signing secret proves the payload
 // came from Slack, and the button's value is the single-use HMAC callback
 // token that proves it belongs to a real pending approval. The approver
-// identity recorded is the Slack user id.
+// identity recorded is the Slack user id, and when SlackApprovers is set
+// only those users can decide.
 func (s *Server) handleSlackInteraction(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
@@ -63,7 +65,14 @@ func (s *Server) handleSlackInteraction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	approver := cb.User.ID
-	if approver == "" {
+	if len(s.SlackApprovers) > 0 {
+		// Audit M5: only listed Slack users decide. Matched on the user id,
+		// never the display name, which any user can change.
+		if !slices.Contains(s.SlackApprovers, approver) {
+			respondText(w, "You are not on actiongate's approver list; nothing was recorded.")
+			return
+		}
+	} else if approver == "" {
 		approver = cb.User.Name
 	}
 

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -52,6 +53,8 @@ type Config struct {
 	SlackBotToken      string
 	SlackSigningSecret string
 	SlackChannel       string
+	// SlackApprovers limits who can approve from Slack (user ids).
+	SlackApprovers []string
 
 	Logger *slog.Logger // defaults to slog.Default()
 }
@@ -217,6 +220,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Pool: pool, Orchestrator: orch, Approvals: approvals, Coordinator: coordinator,
 		GrantKeyID: grantSigner.KeyID(), GrantPublicKey: grantPub,
 		SlackSigningSecret: cfg.SlackSigningSecret,
+		SlackApprovers:     cfg.SlackApprovers,
 		EpochKeyIDs:        []string{epochSigner.KeyID()},
 	}
 	httpServer := &http.Server{
@@ -242,4 +246,16 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	return nil
+}
+
+// SplitList parses a comma-separated setting (such as AG_SLACK_APPROVERS)
+// into its non-empty, trimmed entries.
+func SplitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
