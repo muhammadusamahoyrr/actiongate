@@ -891,10 +891,12 @@ func (a *shellAnalyzer) sshOption(opt string, lit bool) {
 	if cut < 0 {
 		return
 	}
-	// OpenSSH strips double quotes around the keyword and the value.
+	// The keyword may be double-quoted. Command values are NOT unquoted:
+	// OpenSSH hands the raw remainder of the line to the shell, so the
+	// analyzer must judge exactly that text.
 	key := strings.ToLower(strings.Trim(opt[:cut], `"`))
 	val := strings.TrimSpace(opt[cut:])
-	val = strings.Trim(strings.TrimSpace(strings.TrimPrefix(val, "=")), `"`)
+	val = strings.TrimSpace(strings.TrimPrefix(val, "="))
 	if strings.ContainsAny(key, `"'\`) {
 		a.f.opaque("ssh -o keyword the analyzer cannot read: " + key)
 		return
