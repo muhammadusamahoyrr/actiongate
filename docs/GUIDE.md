@@ -197,6 +197,23 @@ of the same action gets the same decision in every pack.
 
 All packs deny secrets reads — that is not negotiable in any pack.
 
+**What the analyzer cannot promise.** It judges the action in front of it.
+
+- **Scripts can change after the check.** When a command runs a script
+  (`bash x.sh`, `python job.py`, `go run x.go`), the gateway reads the
+  script's text at check time, and the decision covers that text. A
+  process the agent started earlier could rewrite the file between the
+  check and the run, but such a process can already do anything directly,
+  unchecked. Treat long-running background processes the agent starts as
+  outside the firewall.
+- **Pattern matching has limits.** The self-approval and secret-path
+  checks match text. A URL or path assembled at run time can get past
+  them.
+- **The real boundary is the OS account.** The agent can reach the token
+  secret in `dev.json` only because it runs as the same OS user as the
+  control plane. Running the control plane under its own account is what
+  closes that.
+
 ## 5. Writing custom policies
 
 A policy is JSON: a `default_decision` plus an ordered list of rules.

@@ -500,6 +500,10 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 					a.f.opaque(name + " searches a directory named by a variable")
 					break
 				}
+				if climbsOnly(x.text) {
+					a.f.opaque(name + " searches " + x.text + ", which may be a home directory")
+					break
+				}
 			}
 		}
 	}

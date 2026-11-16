@@ -202,6 +202,8 @@ func DeriveWith(tool string, params map[string]any, o Options) (f Facts) {
 			f.secretPath(p, "grep inside secret path "+path.Base(slash(p)))
 		} else if ReachesActiongateConfig(p) {
 			f.selfSecretSearch("grep over " + p + ", which contains actiongate's config directory")
+		} else if climbsOnly(p) {
+			f.opaque("grep over " + p + ", which may be a home directory")
 		}
 		if g := str("glob"); g != "" && globMatchesSecret(g) {
 			f.secret("grep glob covers secret files: " + g)

@@ -638,7 +638,27 @@ func ReachesActiongateConfig(p string) bool {
 	case "users", "home": // a home directory: c:/users/x, /home/x, /Users/x
 		return true
 	}
+	switch np {
+	case "/root", "/var/root": // root's home on Linux and macOS
+		return true
+	}
 	return false
+}
+
+// climbsOnly reports whether p is made only of ".." steps (.., ../..):
+// relative to an unknown working directory, it can reach a home directory
+// and from there the config directory.
+func climbsOnly(p string) bool {
+	np := strings.Trim(slash(strings.Trim(strings.TrimSpace(p), `"'`)), "/")
+	if np == "" {
+		return false
+	}
+	for _, part := range strings.Split(np, "/") {
+		if part != ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // selfSecretSearch flags a recursive search that can reach actiongate's
@@ -656,7 +676,20 @@ func recursiveSearch(name string, rest []arg) bool {
 	case "rg", "ag", "ack":
 		return true
 	case "grep", "egrep", "fgrep":
-		return hasShortOrLong(rest, "rR", "--recursive") || hasShortOrLong(rest, "", "--dereference-recursive")
+		if hasShortOrLong(rest, "rR", "--recursive") || hasShortOrLong(rest, "", "--dereference-recursive") {
+			return true
+		}
+		// -d recurse, -drecurse, --directories=recurse (or an abbreviation
+		// such as --dir=recurse) recurse too.
+		for i, x := range rest {
+			t := x.text
+			switch {
+			case t == "-d" && i+1 < len(rest) && rest[i+1].text == "recurse",
+				t == "-drecurse",
+				strings.HasSuffix(t, "=recurse") && isLongPrefix(strings.TrimSuffix(t, "=recurse"), "--directories"):
+				return true
+			}
+		}
 	}
 	return false
 }

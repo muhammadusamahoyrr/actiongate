@@ -89,3 +89,33 @@ func TestGoRunFileIsAScript(t *testing.T) {
 		t.Errorf("go run of a file posting to /approval/callback: self_approval not set (%v)", f.Reasons)
 	}
 }
+
+// Follow-ups from the automated security review: other spellings of
+// recursion, root's home, and roots that climb out of the project.
+func TestSearchRecursionSpellingsAndClimbs(t *testing.T) {
+	for _, cmd := range []string{
+		"grep -d recurse token_secret ~/.config",
+		"grep -drecurse token_secret ~/.config",
+		"grep --directories=recurse token_secret ~/.config",
+		"grep --dir=recurse token_secret ~/.config",
+		"grep -r token_secret /root",
+		"grep -r token_secret /var/root",
+	} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); !f.SelfSecret {
+			t.Errorf("%q: self_secret not set (%v)", cmd, f.Reasons)
+		}
+	}
+	for _, cmd := range []string{"grep -r token_secret ../..", "rg token_secret .."} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); !f.Opaque && !f.SelfSecret {
+			t.Errorf("%q: neither opaque nor self_secret (%v)", cmd, f.Reasons)
+		}
+	}
+	if f := Derive("Grep", map[string]any{"pattern": "x", "path": "../.."}); !f.Opaque {
+		t.Errorf("Grep path ../..: not opaque (%v)", f.Reasons)
+	}
+	for _, cmd := range []string{"grep -r TODO .", "grep -r TODO ../sibling/src", "grep -d skip x *"} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); f.Opaque || f.SelfSecret {
+			t.Errorf("%q flagged: %v", cmd, f.Reasons)
+		}
+	}
+}
