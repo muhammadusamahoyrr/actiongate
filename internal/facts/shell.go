@@ -4,6 +4,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/syntax"
@@ -925,18 +926,21 @@ func balancedParen(s string) (string, bool) {
 	depth, quote := 0, byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		switch {
-		case quote != 0:
-			if c == '\\' {
+		if quote != 0 {
+			switch c {
+			case '\\':
 				i++
-			} else if c == quote {
+			case quote:
 				quote = 0
 			}
-		case c == '"' || c == '\'':
+			continue
+		}
+		switch c {
+		case '"', '\'':
 			quote = c
-		case c == '(':
+		case '(':
 			depth++
-		case c == ')':
+		case ')':
 			depth--
 			if depth == 0 {
 				return s[1:i], true
@@ -953,19 +957,22 @@ func (a *shellAnalyzer) sedExec(rest []arg) {
 	for i := 0; i < len(rest); i++ {
 		t := rest[i].text
 		switch {
-		case t == "-e" || t == "--expression":
+		// Long options are matched with their GNU abbreviations (--expr,
+		// --fi, --line).
+		case t == "-e" || isLongPrefix(t, "--expression") && !strings.Contains(t, "="):
 			if i+1 < len(rest) {
 				scripts = append(scripts, rest[i+1].text)
 				i++
 			}
 			explicit = true
-		case strings.HasPrefix(t, "--expression="):
-			scripts = append(scripts, strings.TrimPrefix(t, "--expression="))
+		case isLongPrefix(t, "--expression"):
+			_, v, _ := strings.Cut(t, "=")
+			scripts = append(scripts, v)
 			explicit = true
-		case t == "-f" || t == "--file" || strings.HasPrefix(t, "--file="):
+		case t == "-f" || isLongPrefix(t, "--file"):
 			a.f.opaque("sed runs a script from a file")
 			return
-		case t == "--line-length":
+		case isLongPrefix(t, "--line-length") && !strings.Contains(t, "="):
 			i++
 		case isShortCluster(t):
 			// -ne 'script', -eSCRIPT, -nf file: options until one takes a value.
@@ -1025,6 +1032,15 @@ func sedHasECommand(script string) bool {
 
 var sedEPosition = regexp.MustCompile(`(^|[;\n{}\s0-9$!~,/])e(\s|$|[;}\n])`)
 
+// sedAddressPosition: an address can start at i — the script's start, or
+// after a separator, a range comma, a negation or whitespace.
+func sedAddressPosition(script string, i int) bool {
+	if i == 0 {
+		return true
+	}
+	return strings.IndexByte(";\n{},! \t", script[i-1]) >= 0
+}
+
 // blankSedBodies replaces the bodies of s and y commands and of /regex/
 // addresses with nothing, keeping the command structure.
 func blankSedBodies(script string) string {
@@ -1047,8 +1063,9 @@ func blankSedBodies(script string) string {
 			b.WriteByte(c)
 			b.WriteByte(';') // flags follow; the body is gone
 			i = j - 1
-		case c == '/' || c == '\\' && i+1 < len(script):
-			// /re/ or \cREc (any delimiter c), then I/M modifiers.
+		case c == '/' || c == '\\' && i+1 < len(script) && sedAddressPosition(script, i):
+			// /re/ or \cREc (any delimiter c, only where an address can
+			// start), then I/M modifiers.
 			delim, j := byte('/'), i+1
 			if c == '\\' {
 				delim, j = script[i+1], i+2
@@ -1058,6 +1075,12 @@ func blankSedBodies(script string) string {
 					j++
 				}
 				j++
+			}
+			if j >= len(script) {
+				// Never closed: the structure cannot be read. Force the e
+				// check to fail closed.
+				b.WriteString(";e")
+				return b.String()
 			}
 			for j+1 < len(script) && (script[j+1] == 'I' || script[j+1] == 'M') {
 				j++
@@ -1356,8 +1379,9 @@ func flockCommand(rest []arg) (arg, bool) {
 			if i+1 < len(rest) {
 				return rest[i+1], true
 			}
-		case strings.HasPrefix(t, "--command="):
-			return arg{text: strings.TrimPrefix(t, "--command="), lit: x.lit}, true
+		case strings.HasPrefix(t, "--command=") || isLongPrefix(t, "--command") && strings.Contains(t, "="):
+			_, v, _ := strings.Cut(t, "=") // --command=cmd, --com=cmd
+			return arg{text: v, lit: x.lit}, true
 		case isShortCluster(t):
 			for j, r := range t[1:] {
 				if r == 'c' {
@@ -1667,10 +1691,13 @@ func decodeANSICAll(s string) string {
 				j++
 			}
 			if n, ok := hexVal(s[i+1 : j]); ok && j > i+1 {
-				if c == 'x' {
-					b.WriteByte(byte(n))
-				} else {
-					b.WriteRune(rune(n))
+				switch {
+				case c == 'x':
+					b.WriteByte(byte(n & 0xff)) //nolint:gosec // G115: at most two hex digits, masked
+				case n >= 0 && n <= utf8.MaxRune:
+					b.WriteRune(rune(n)) //nolint:gosec // G115: bounded by utf8.MaxRune just above
+				default:
+					b.WriteRune(utf8.RuneError)
 				}
 				i = j - 1
 			} else {
