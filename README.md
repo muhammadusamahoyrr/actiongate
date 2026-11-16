@@ -108,8 +108,8 @@ Choose a pack when you protect a project, so you don't have to write rules yours
 | Pack | Behavior |
 |---|---|
 | `claude-code` (default) | Blocks secret reads. Destructive and opaque shell/PowerShell commands wait for approval, however they are spelled. Everything else passes. |
-| `paranoid` | Blocks secrets. **Every** shell command and file change waits for approval. Reads pass. |
-| `relaxed` | Blocks secrets. Only catastrophic commands (`rm -rf /`, `dd`, `mkfs`, `DROP DATABASE`…) wait. |
+| `paranoid` | Blocks secrets and self-tampering. Reads pass; **everything else** waits for approval: every shell or PowerShell command, every file change, every other tool. |
+| `relaxed` | Blocks secrets, however they are spelled. Destructive actions (bulk deletes, force pushes, dropped tables, …) wait; code the analyzer cannot inspect runs. |
 
 ```bash
 actiongate protect claude-code -pack paranoid
