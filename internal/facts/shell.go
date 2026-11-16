@@ -238,9 +238,28 @@ func (a *shellAnalyzer) command(args []arg, in stdinSource) {
 		a.f.opaque("command name is computed at run time")
 		return
 	}
+	// A glob as the command name (/bin/r? -rf ~) runs whatever it expands
+	// to; the analyzer cannot know which command that is. ([ and [[ are the
+	// test builtins.)
+	if t := args[0].text; t != "[" && t != "[[" && strings.ContainsAny(t, "*?[") {
+		a.f.opaque("command name is a glob: " + t)
+		return
+	}
 	name := cmdName(args[0].text)
 	rest := args[1:]
 	a.tamperArgs(name, rest)
+	// A dangerous command whose arguments are computed at run time
+	// (rm $(echo -rf) ~, rm "$X" ~) may receive flags the analyzer never
+	// sees: fail closed. git counts only for its history-rewriting
+	// subcommands, so `git commit -m "$(...)"` stays clean.
+	if computedArgsMatter(name, rest) {
+		for _, x := range rest {
+			if !x.lit {
+				a.f.opaque(name + " receives arguments computed at run time")
+				break
+			}
+		}
+	}
 
 	switch {
 	case name == "rm":
@@ -491,6 +510,23 @@ func operands(name string, rest []arg) []arg {
 	return rest
 }
 
+// dangerousVerbs can destroy data depending on their flags and operands.
+var dangerousVerbs = set("rm", "rmdir", "shred", "unlink", "chmod", "chown", "chgrp", "dd", "truncate", "wipefs", "find", "rimraf")
+
+// gitRewriting are the git subcommands whose flags decide whether history
+// or work is destroyed.
+var gitRewriting = set("push", "reset", "clean", "branch", "checkout", "restore", "stash", "rebase", "filter-branch", "filter-repo", "update-ref", "reflog")
+
+func computedArgsMatter(name string, rest []arg) bool {
+	if dangerousVerbs[name] || strings.HasPrefix(name, "mkfs") {
+		return true
+	}
+	if name == "git" {
+		return gitRewriting[gitSubcommand(texts(rest))]
+	}
+	return false
+}
+
 func gitSubcommand(args []string) string {
 	for i := 0; i < len(args); i++ {
 		t := args[i]
@@ -630,8 +666,9 @@ func gitDestructive(args []string) string {
 	case "push":
 		for _, t := range rest {
 			switch {
-			case t == "--force" || t == "--mirror" || t == "--delete" || strings.HasPrefix(t, "--force-with-lease") || t == "--force-if-includes":
-				return "git push rewrites or deletes remote history"
+			case isLongPrefix(t, "--force") || isLongPrefix(t, "--mirror") || isLongPrefix(t, "--delete") ||
+				isLongPrefix(t, "--force-with-lease") || isLongPrefix(t, "--force-if-includes"):
+				return "git push rewrites or deletes remote history" // --forc, --del, ... too
 			case isShortCluster(t) && strings.ContainsAny(t, "fd"):
 				return "git push rewrites or deletes remote history"
 			case strings.HasPrefix(t, "+"):
@@ -641,17 +678,27 @@ func gitDestructive(args []string) string {
 			}
 		}
 	case "reset":
-		if contains(rest, "--hard") {
-			return "git reset --hard discards work"
+		for _, t := range rest {
+			if isLongPrefix(t, "--hard") {
+				return "git reset --hard discards work"
+			}
 		}
 	case "clean":
 		for _, t := range rest {
-			if t == "--force" || isShortCluster(t) && strings.Contains(t, "f") {
+			if isLongPrefix(t, "--force") || isShortCluster(t) && strings.Contains(t, "f") {
 				return "git clean deletes untracked files"
 			}
 		}
 	case "branch":
-		if contains(rest, "-D") || contains(rest, "--delete") && contains(rest, "--force") {
+		del, force := false, false
+		for _, t := range rest {
+			del = del || isLongPrefix(t, "--delete") || isShortCluster(t) && strings.Contains(t, "d")
+			force = force || isLongPrefix(t, "--force") || isShortCluster(t) && strings.Contains(t, "f")
+			if t == "-D" || isShortCluster(t) && strings.Contains(t, "D") {
+				return "git branch -D deletes unmerged work"
+			}
+		}
+		if del && force {
 			return "git branch -D deletes unmerged work"
 		}
 	case "checkout":
@@ -731,7 +778,13 @@ func resolve(w *syntax.Word, vars map[string]string, placeholder bool) (string, 
 		case *syntax.Lit:
 			b.WriteString(unescape(p.Value, false))
 		case *syntax.SglQuoted:
-			b.WriteString(p.Value)
+			if p.Dollar {
+				// $'\x72\x6d' is "rm": decode it the way bash does, so the
+				// analyzer judges the word that actually runs.
+				b.WriteString(decodeANSIC(p.Value))
+			} else {
+				b.WriteString(p.Value)
+			}
 		case *syntax.ParamExp:
 			if !param(p) {
 				return "", false
@@ -758,6 +811,103 @@ func resolve(w *syntax.Word, vars map[string]string, placeholder bool) (string, 
 		}
 	}
 	return b.String(), static
+}
+
+// decodeANSIC decodes the body of a bash $'...' string: \a \b \e \f \n \r
+// \t \v \\ \' \" \?, \xHH, \uHHHH, \UHHHHHHHH, \NNN (octal) and \cX.
+func decodeANSIC(s string) string {
+	var b strings.Builder
+	hexVal := func(h string) (int, bool) {
+		n := 0
+		for _, c := range h {
+			switch {
+			case c >= '0' && c <= '9':
+				n = n*16 + int(c-'0')
+			case c >= 'a' && c <= 'f':
+				n = n*16 + int(c-'a') + 10
+			case c >= 'A' && c <= 'F':
+				n = n*16 + int(c-'A') + 10
+			default:
+				return 0, false
+			}
+		}
+		return n, true
+	}
+	isHex := func(c byte) bool {
+		return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch c := s[i]; c {
+		case 'a':
+			b.WriteByte(7)
+		case 'b':
+			b.WriteByte(8)
+		case 'e', 'E':
+			b.WriteByte(27)
+		case 'f':
+			b.WriteByte(12)
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'v':
+			b.WriteByte(11)
+		case '\\', '\'', '"', '?':
+			b.WriteByte(c)
+		case 'x', 'u', 'U':
+			maxDigits := map[byte]int{'x': 2, 'u': 4, 'U': 8}[c]
+			j := i + 1
+			for j < len(s) && j-i-1 < maxDigits && isHex(s[j]) {
+				j++
+			}
+			if n, ok := hexVal(s[i+1 : j]); ok && j > i+1 {
+				if c == 'x' {
+					b.WriteByte(byte(n))
+				} else {
+					b.WriteRune(rune(n))
+				}
+				i = j - 1
+			} else {
+				b.WriteByte('\\')
+				b.WriteByte(c)
+			}
+		case 'c':
+			if i+1 < len(s) {
+				b.WriteByte(s[i+1] & 0x1f)
+				i++
+			}
+		default:
+			if c >= '0' && c <= '7' {
+				n, j := 0, i
+				for j < len(s) && j-i < 3 && s[j] >= '0' && s[j] <= '7' {
+					n = n*8 + int(s[j]-'0')
+					j++
+				}
+				b.WriteByte(byte(n))
+				i = j - 1
+			} else {
+				b.WriteByte('\\')
+				b.WriteByte(c)
+			}
+		}
+	}
+	return b.String()
+}
+
+// isLongPrefix reports whether t (before any "=value") is an abbreviation
+// of the long option full that GNU getopt and git would accept — at least
+// two characters after "--". An ambiguous abbreviation errors out in the
+// tool itself, so treating it as the dangerous option only fails closed.
+func isLongPrefix(t, full string) bool {
+	name, _, _ := strings.Cut(t, "=")
+	return strings.HasPrefix(name, "--") && len(name) >= 4 && strings.HasPrefix(full, name)
 }
 
 func unescape(s string, inDouble bool) string {
@@ -804,8 +954,8 @@ func hasShortOrLong(args []arg, shortLetters, long string) bool {
 		if x.text == "--" {
 			return false
 		}
-		if x.text == long {
-			return true
+		if x.text == long || isLongPrefix(x.text, long) {
+			return true // --rec is --recursive
 		}
 		if isShortCluster(x.text) && strings.ContainsAny(x.text, shortLetters) {
 			return true
