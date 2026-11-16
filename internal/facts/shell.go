@@ -895,8 +895,8 @@ func (a *shellAnalyzer) sshOption(opt string, lit bool) {
 	// OpenSSH hands the raw remainder of the line to the shell, so the
 	// analyzer must judge exactly that text.
 	key := strings.ToLower(strings.Trim(opt[:cut], `"`))
-	val := strings.TrimSpace(opt[cut:])
-	val = strings.TrimSpace(strings.TrimPrefix(val, "="))
+	// OpenSSH skips every leading space, tab and '=' after the keyword.
+	val := strings.TrimRight(strings.TrimLeft(opt[cut:], " \t="), " \t")
 	if strings.ContainsAny(key, `"'\`) {
 		a.f.opaque("ssh -o keyword the analyzer cannot read: " + key)
 		return
