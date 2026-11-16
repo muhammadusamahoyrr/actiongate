@@ -169,3 +169,22 @@ func TestSearchSpellingsRoundThree(t *testing.T) {
 		}
 	}
 }
+
+// Fourth round: unknown -d values and option words from variables fail
+// closed; read and skip stay clean.
+func TestSearchSpellingsRoundFour(t *testing.T) {
+	for _, cmd := range []string{
+		"grep -d RECURSE token_secret ~/.config",
+		"grep $FLAGS token_secret ~/.config",
+		"grep -n$X token_secret ~/.config",
+	} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); !f.SelfSecret {
+			t.Errorf("%q: self_secret not set (%v)", cmd, f.Reasons)
+		}
+	}
+	for _, cmd := range []string{"grep -d sk x ~/.config", "grep --directories=rea x ~/.config", "grep -n token ~/notes.txt"} {
+		if f := Derive("Bash", map[string]any{"command": cmd}); f.SelfSecret {
+			t.Errorf("%q flagged self_secret: %v", cmd, f.Reasons)
+		}
+	}
+}

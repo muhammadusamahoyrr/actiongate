@@ -690,15 +690,26 @@ func recursiveSearch(name string, rest []arg) bool {
 				strings.HasPrefix(t, "--") && (isLongPrefix(t, "--recursive") || isLongPrefix(t, "--dereference-recursive")) {
 				return true
 			}
-			// -d ACTION / --directories=ACTION: "recurse" in any spelling
-			// grep accepts (-d recurse, -nd rec, --dir=recu), or a value
-			// the analyzer cannot read.
-			if v := grepDirectoriesValue(rest, i); v != "" && (strings.Contains(v, "\x00") || len(v) >= 3 && strings.HasPrefix("recurse", v)) {
+			// An option word built from a variable ($FLAGS) may be -r.
+			if strings.Contains(t, "\x00") && (strings.HasPrefix(t, "-") || strings.Trim(t, "\x00") == "") {
+				return true
+			}
+			// -d ACTION / --directories=ACTION: anything but read or skip
+			// (or their abbreviations) is treated as recurse, so spellings
+			// and values the analyzer cannot read fail closed.
+			if v := grepDirectoriesValue(rest, i); v != "" && !grepDirectoriesHarmless(v) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// grepDirectoriesHarmless reports whether a -d/--directories value is one
+// that does not recurse: skip or read, or an unambiguous abbreviation of
+// them ("r" and "re" are ambiguous with recurse, and grep rejects them).
+func grepDirectoriesHarmless(v string) bool {
+	return strings.HasPrefix("skip", v) || len(v) >= 3 && strings.HasPrefix("read", v)
 }
 
 // shortFlagsBeforeValue returns the flag letters of a short cluster up to
