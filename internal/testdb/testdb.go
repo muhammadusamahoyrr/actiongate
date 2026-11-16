@@ -6,6 +6,7 @@ package testdb
 import (
 	"context"
 	"database/sql"
+	"os"
 	"testing"
 	"time"
 
@@ -23,6 +24,12 @@ import (
 // and returns a pgxpool. Cleanup is registered on t.
 func SetupPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	// Windows and macOS runners have no Linux container daemon. They set
+	// this to run everything else; the Linux job runs these suites. It is
+	// opt-in, so a missing Docker on Linux still fails loudly.
+	if os.Getenv("AG_SKIP_DOCKER_TESTS") != "" {
+		t.Skip("AG_SKIP_DOCKER_TESTS is set: this test needs a Postgres container")
+	}
 	ctx := context.Background()
 
 	pgc, err := tcpostgres.Run(ctx, "postgres:18-alpine",
