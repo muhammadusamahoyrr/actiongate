@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -55,5 +56,40 @@ func TestMintTokenRejectsBadInput(t *testing.T) {
 	}
 	if _, _, err := mintToken(testSecret, uuid.New(), uuid.Nil); err == nil {
 		t.Error("nil approval id accepted")
+	}
+}
+
+// Audit M5: a Slack-bound token resolves the same approval (same stored
+// hash) through the Slack path, and is refused by the callback path, so a
+// token copied from a Slack message cannot bypass the approver allowlist.
+func TestSlackTokenIsChannelBound(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	tenant, approval := uuid.New(), uuid.New()
+	canonical, wantHash, err := mintToken(secret, tenant, approval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slackTok, err := mintSlackToken(secret, tenant, approval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slackTok == canonical || !strings.HasPrefix(slackTok, slackTokenPrefix) {
+		t.Fatalf("slack token %q is not a distinct agts_ token", slackTok)
+	}
+
+	if _, _, err := parseToken(secret, slackTok); !errors.Is(err, ErrTokenInvalid) {
+		t.Errorf("callback path accepted a Slack-bound token: %v", err)
+	}
+	for _, tok := range []string{slackTok, canonical} {
+		gotTenant, gotHash, err := parseSlackToken(secret, tok)
+		if err != nil || gotTenant != tenant || !bytes.Equal(gotHash, wantHash) {
+			t.Errorf("Slack path, token %.8s…: tenant %v hash match %v err %v", tok, gotTenant, bytes.Equal(gotHash, wantHash), err)
+		}
+	}
+	// The Slack form is signed under its own tag: re-tagging a canonical
+	// token's parts as agts_ does not verify.
+	forged := slackTokenPrefix + strings.TrimPrefix(canonical, tokenPrefix)
+	if _, _, err := parseSlackToken(secret, forged); !errors.Is(err, ErrTokenInvalid) {
+		t.Errorf("re-tagged canonical token accepted as Slack-bound: %v", err)
 	}
 }

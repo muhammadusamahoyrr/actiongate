@@ -76,7 +76,7 @@ func (s *Server) handleSlackInteraction(w http.ResponseWriter, r *http.Request) 
 		approver = cb.User.Name
 	}
 
-	res, err := s.Approvals.Resolve(r.Context(), action.Value, decision, "slack:"+approver, "via slack")
+	res, err := s.Approvals.ResolveFromSlack(r.Context(), action.Value, decision, "slack:"+approver, "via slack")
 	switch {
 	case err == nil:
 		respondText(w, "Recorded: "+decision+" — action "+res.ActionID.String())

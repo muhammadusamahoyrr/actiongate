@@ -313,7 +313,10 @@ with the Slack user's identity.
 By default anyone who can click in the channel can decide. To limit that,
 list the Slack user ids allowed to approve: set `slack_approvers` in
 `dev.json` (a JSON list) or `AG_SLACK_APPROVERS="U012AB3CD,U045EF6GH"`.
-Clicks from anyone else are refused and the approval stays pending.
+Clicks from anyone else are refused and the approval stays pending. The
+token in a Slack button only works through Slack's signed endpoint, so
+copying it out of the message and posting it to `/approval/callback` does
+not get around the list.
 
 ### Without Slack — `actiongate approvals`
 

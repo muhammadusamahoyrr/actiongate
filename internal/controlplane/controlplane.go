@@ -168,14 +168,19 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	var port notify.Port = notify.LogPort{}
+	mint := approvals.CallbackToken
 	if cfg.SlackBotToken != "" {
 		port = notify.SlackPort{
 			Client:         slack.New(cfg.SlackBotToken),
 			DefaultChannel: cfg.SlackChannel,
 		}
+		// Slack buttons carry Slack-bound tokens: anyone who can read the
+		// channel sees them, and they must not work at /approval/callback,
+		// past the approver allowlist (audit M5).
+		mint = approvals.SlackToken
 		log.Info("slack notifications enabled", "default_channel", cfg.SlackChannel)
 	}
-	workers, err := queue.NewWorkers(pool, port, approvals.CallbackToken)
+	workers, err := queue.NewWorkers(pool, port, mint)
 	if err != nil {
 		return fmt.Errorf("workers: %w", err)
 	}
