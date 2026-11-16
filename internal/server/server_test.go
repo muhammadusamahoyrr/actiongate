@@ -153,7 +153,16 @@ func waitForDeliveryToken(t *testing.T, w *wireWorld, actionID string) string {
 	if err := json.Unmarshal(raw, &delivered); err != nil {
 		t.Fatalf("delivery args: %v", err)
 	}
-	return delivered.CallbackToken
+	// Audit C5: the job holds ids only. Re-derive the token, as the
+	// delivery worker does at send time.
+	if strings.Contains(string(raw), "callback_token") {
+		t.Fatalf("raw callback token stored in the delivery job: %s", raw)
+	}
+	token, err := w.stack.CallbackToken(delivered.TenantID, delivered.ApprovalRequestID)
+	if err != nil {
+		t.Fatalf("derive callback token: %v", err)
+	}
+	return token
 }
 
 func TestWire(t *testing.T) {
@@ -259,9 +268,13 @@ func TestWire(t *testing.T) {
 		if err := json.Unmarshal(deliveryArgs, &delivered); err != nil {
 			t.Fatalf("delivery args: %v", err)
 		}
+		token, err := w.stack.CallbackToken(delivered.TenantID, delivered.ApprovalRequestID)
+		if err != nil {
+			t.Fatalf("derive callback token: %v", err)
+		}
 
 		body, _ := json.Marshal(map[string]string{
-			"token": delivered.CallbackToken, "decision": "approved",
+			"token": token, "decision": "approved",
 			"approver_id": "alice", "reason": "reviewed",
 		})
 		cb, err := http.Post(w.baseURL+"/approval/callback", "application/json", bytes.NewReader(body))

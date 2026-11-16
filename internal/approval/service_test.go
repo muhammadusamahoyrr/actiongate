@@ -159,8 +159,16 @@ func TestApprovalService(t *testing.T) {
 		if err := json.Unmarshal(deliveryArgs, &delivered); err != nil {
 			t.Fatalf("delivery args: %v", err)
 		}
-		if delivered.CallbackToken != req.Token || delivered.ApproverTarget != "sre-oncall" {
+		if delivered.ApproverTarget != "sre-oncall" {
 			t.Fatalf("delivery payload mangled: %+v", delivered)
+		}
+		// Audit C5: the queued job never holds the raw token; the worker
+		// re-derives exactly the token the approver must present.
+		if strings.Contains(string(deliveryArgs), "callback_token") || strings.Contains(string(deliveryArgs), req.Token) {
+			t.Fatalf("raw callback token stored in the delivery job: %s", deliveryArgs)
+		}
+		if got, err := svc.CallbackToken(delivered.TenantID, delivered.ApprovalRequestID); err != nil || got != req.Token {
+			t.Fatalf("re-derived token = %q, %v; want the issued one", got, err)
 		}
 	})
 

@@ -59,8 +59,10 @@ type AuthorizeExecutionArgs struct {
 func (AuthorizeExecutionArgs) Kind() string { return "authorize_execution" }
 
 // DeliverApprovalArgs carries an approval notification to the
-// NotificationWorker. Fields mirror notify.Message: names and identifiers
-// only, never raw params.
+// NotificationWorker. Names and identifiers only, never raw params — and
+// never the callback token: River keeps finished jobs for a retention
+// window, so a token in the args would let anyone with database read
+// access approve their own action (audit C5). The worker re-derives it.
 type DeliverApprovalArgs struct {
 	TenantID          uuid.UUID `json:"tenant_id"`
 	ActionID          uuid.UUID `json:"action_id"`
@@ -68,7 +70,28 @@ type DeliverApprovalArgs struct {
 	ApproverTarget    string    `json:"approver_target"`
 	Title             string    `json:"title"`
 	Body              string    `json:"body"`
-	CallbackToken     string    `json:"callback_token"`
+	// LegacyCallbackToken is only ever READ, from jobs an older build
+	// queued with the raw token in them; new jobs never set it.
+	LegacyCallbackToken string `json:"callback_token,omitempty"`
+}
+
+// TokenMinter re-derives an approval's callback token at delivery time
+// (approval.Service.CallbackToken).
+type TokenMinter func(tenantID, approvalRequestID uuid.UUID) (string, error)
+
+// ScrubLegacyCallbackTokens removes raw callback tokens that older builds
+// left in the args of FINISHED delivery jobs (River retains them for a
+// while). Jobs still waiting to be delivered keep theirs: their token was
+// random and cannot be re-derived.
+func ScrubLegacyCallbackTokens(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	tag, err := pool.Exec(ctx,
+		`update river_job set args = args - 'callback_token'
+		  where kind = 'deliver_approval' and args ? 'callback_token'
+		    and state in ('completed', 'discarded', 'cancelled')`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (DeliverApprovalArgs) Kind() string { return "deliver_approval" }

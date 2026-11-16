@@ -43,6 +43,9 @@ type Stack struct {
 	Pool     *pgxpool.Pool
 	BaseURL  string
 	TenantID uuid.UUID
+	// CallbackToken re-derives an approval's callback token, standing in
+	// for the notification channel (the queued job never carries it).
+	CallbackToken queue.TokenMinter
 }
 
 // Setup builds the whole control plane with DefaultPolicy for one tenant.
@@ -90,7 +93,7 @@ func Setup(t *testing.T) *Stack {
 	}
 	orch := &orchestrator.Orchestrator{Pool: app, Engine: engine, Approvals: approvals, Coordinator: coordinator}
 
-	workers, err := queue.NewWorkers(app, notify.LogPort{})
+	workers, err := queue.NewWorkers(app, notify.LogPort{}, approvals.CallbackToken)
 	if err != nil {
 		t.Fatalf("workers: %v", err)
 	}
@@ -129,7 +132,7 @@ func Setup(t *testing.T) *Stack {
 		 values ($1, 1, $2, '\x00', 'test')`, tenantID, DefaultPolicy); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	return &Stack{Pool: pool, BaseURL: ts.URL, TenantID: tenantID}
+	return &Stack{Pool: pool, BaseURL: ts.URL, TenantID: tenantID, CallbackToken: approvals.CallbackToken}
 }
 
 // SeedEnrollmentToken provisions a fresh single-use token for the stack's
