@@ -150,11 +150,11 @@ actiongate is up.
 
   Verify the audit trail any time (AG_DATABASE_URL = "database_url" in
   %s; it holds the database password, so it is not printed here):
-      verify -tenant %s -key epoch-1=%s
+      verify -tenant %s -key %s=%s
 
   Approvals: without Slack configured, pending actions are approved via
   POST %s/approval/callback (see README "Try it", step 6).
-%s`, cfgPath, cfg.TenantID, epochPub, cfg.ServerURL, serviceHint())
+%s`, cfgPath, cfg.TenantID, cfg.epochKeyID(), epochPub, cfg.ServerURL, serviceHint())
 
 	if alreadyRunning {
 		return 0
@@ -198,6 +198,8 @@ func runControlPlane(ctx context.Context, cfg *devConfig, log *slog.Logger) erro
 		TokenSecret:        cfg.TokenSecret,
 		GrantKeySeed:       grantSeed,
 		EpochKeySeed:       epochSeed,
+		GrantKeyID:         cfg.GrantKeyID,
+		EpochKeyID:         cfg.EpochKeyID,
 		SlackBotToken:      firstNonEmpty(cfg.SlackBotToken, os.Getenv("AG_SLACK_BOT_TOKEN")),
 		SlackSigningSecret: firstNonEmpty(cfg.SlackSigningSecret, os.Getenv("AG_SLACK_SIGNING_SECRET")),
 		SlackChannel:       firstNonEmpty(cfg.SlackChannel, os.Getenv("AG_SLACK_CHANNEL")),

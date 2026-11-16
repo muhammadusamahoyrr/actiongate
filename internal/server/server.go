@@ -9,9 +9,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -33,6 +35,7 @@ import (
 	"github.com/muhammadusamahoyrr/actiongate/internal/grant"
 	"github.com/muhammadusamahoyrr/actiongate/internal/health"
 	"github.com/muhammadusamahoyrr/actiongate/internal/orchestrator"
+	"github.com/muhammadusamahoyrr/actiongate/internal/transition"
 )
 
 const (
@@ -54,6 +57,8 @@ type Server struct {
 	Version     string
 	EpochKeyIDs []string
 	Now         func() time.Time
+	// Logger receives internal errors in full; callers see only a reference.
+	Logger *slog.Logger
 }
 
 func (s *Server) now() time.Time {
@@ -148,20 +153,20 @@ func (s *Server) Enroll(ctx context.Context, req *connect.Request[actiongatev1.E
 
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("randomness: %w", err))
+		return nil, s.internalError(fmt.Errorf("randomness: %w", err))
 	}
 	credential := "agc_" + base64.RawURLEncoding.EncodeToString(secret)
 	credentialSum := sha256.Sum256([]byte(credential))
 	gatewayID, err := uuid.NewV7()
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, s.internalError(err)
 	}
 	now := s.now().UTC()
 
 	// Token single-use mark and gateway creation commit together.
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, s.internalError(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var tenantID uuid.UUID
@@ -174,17 +179,17 @@ func (s *Server) Enroll(ctx context.Context, req *connect.Request[actiongatev1.E
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("enrollment token invalid, used, or expired"))
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, s.internalError(err)
 	}
 	if _, err := tx.Exec(ctx,
 		`insert into gateways (gateway_id, tenant_id, name, public_key, credential_hash, created_at)
 		 values ($1, $2, $3, $4, $5, $6)`,
 		gatewayID, tenantID, m.GetGatewayName(), m.GetGatewayPublicKey(), credentialSum[:], now,
 	); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, s.internalError(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, s.internalError(err)
 	}
 
 	return connect.NewResponse(&actiongatev1.EnrollResponse{
@@ -240,7 +245,7 @@ func (s *Server) SubmitAction(ctx context.Context, req *connect.Request[actionga
 
 	res, err := s.Orchestrator.Submit(ctx, in)
 	if err != nil {
-		return nil, mapSubmitError(err)
+		return nil, s.mapSubmitError(err)
 	}
 	return connect.NewResponse(s.submitResponse(ctx, identity.TenantID, res)), nil
 }
@@ -309,7 +314,7 @@ func (s *Server) GetActionStatus(ctx context.Context, req *connect.Request[actio
 	}
 	res, err := s.Orchestrator.Status(ctx, identity.TenantID, actionID)
 	if err != nil {
-		return nil, mapSubmitError(err)
+		return nil, s.mapSubmitError(err)
 	}
 	resp := &actiongatev1.GetActionStatusResponse{
 		ActionId:  actionID.String(),
@@ -349,7 +354,7 @@ func (s *Server) ReportOutcome(ctx context.Context, req *connect.Request[actiong
 		if errors.Is(err, execution.ErrUnknownGrant) {
 			return nil, connect.NewError(connect.CodeNotFound, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, s.internalError(err)
 	}
 	return connect.NewResponse(&actiongatev1.ReportOutcomeResponse{
 		Accepted:  accepted,
@@ -496,6 +501,39 @@ func envelopeMessage(envelopeBytes []byte) *actiongatev1.GrantEnvelope {
 	return &env
 }
 
-func mapSubmitError(err error) error {
-	return connect.NewError(connect.CodeFailedPrecondition, err)
+// mapSubmitError turns an orchestrator error into what the gateway sees
+// (audit L2): known outcomes keep a short fixed message; anything else is
+// an internal error whose details go to the operator's log only.
+func (s *Server) mapSubmitError(err error) error {
+	switch {
+	case errors.Is(err, orchestrator.ErrPolicyFailed):
+		s.logger().Error("policy evaluation failed; action refused", "error", err)
+		return connect.NewError(connect.CodeFailedPrecondition, orchestrator.ErrPolicyFailed)
+	case errors.Is(err, transition.ErrIdempotencyConflict):
+		return connect.NewError(connect.CodeFailedPrecondition, transition.ErrIdempotencyConflict)
+	case errors.Is(err, transition.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+	case errors.Is(err, transition.ErrInvalidTransition), errors.Is(err, transition.ErrVersionConflict):
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("action is not in a state that allows this"))
+	}
+	return s.internalError(err)
+}
+
+// internalError logs err with a short reference and returns only that
+// reference to the caller (audit L2): database and library errors name
+// tables, constraints and paths that are no business of a gateway, let
+// alone of an unauthenticated caller of Enroll.
+func (s *Server) internalError(err error) error {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	ref := hex.EncodeToString(b[:])
+	s.logger().Error("request failed", "ref", ref, "error", err)
+	return connect.NewError(connect.CodeInternal, fmt.Errorf("internal error (ref %s)", ref))
+}
+
+func (s *Server) logger() *slog.Logger {
+	if s.Logger != nil {
+		return s.Logger
+	}
+	return slog.Default()
 }

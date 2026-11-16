@@ -20,10 +20,6 @@ import (
 // -ldflags "-X main.version=...".
 var version = "dev"
 
-// epochKeyID is the fixed signing key id the control plane uses (see
-// internal/controlplane); the doctor uses it to validate sealed epochs.
-const epochKeyID = "epoch-1"
-
 // cmdDoctor runs an end-to-end health check and prints a human-readable report,
 // exiting non-zero if anything is unhealthy. It is the single command to reach
 // for when "it doesn't work".
@@ -54,7 +50,7 @@ func cmdDoctor(_ []string) int {
 	rep := health.Check(ctx, pool, health.Options{
 		Version:     version,
 		TenantID:    cfg.TenantID,
-		EpochKeyIDs: []string{epochKeyID},
+		EpochKeyIDs: []string{cfg.epochKeyID()},
 	})
 
 	ok := true
