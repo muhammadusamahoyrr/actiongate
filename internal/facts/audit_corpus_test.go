@@ -80,6 +80,14 @@ func TestAuditBypassCorpus(t *testing.T) {
 		{"taskset mask cmd", "Bash", `taskset 0x1 rm -rf ~`, destructive},
 		{"ionice -c 3 cmd", "Bash", `ionice -c 3 rm -rf ~`, destructive},
 		{"PowerShell bash -o", "PowerShell", `bash -o pipefail -c 'rm -rf ~'`, destructive},
+		{"env -S with escapes", "Bash", `env -S 'r\_m -rf ~'`, gated},
+		{"awk pipe after quote in comment", "Bash", "awk 'BEGIN{ # it\\'s\n print \"x\" | \"sh\" }'", gated},
+		{"sed address modifier", "Bash", `sed '/a/Ie id' f`, gated},
+		{"sed \\c address", "Bash", `sed '\,a,e id' f`, gated},
+		{"sed -l value", "Bash", `sed -l 5 'e rm -rf /x' f`, gated},
+		{"sudo flock -c", "Bash", `sudo flock /tmp/l -c 'rm -rf ~'`, destructive},
+		{"flock --command=", "Bash", `flock /tmp/l --command='rm -rf ~'`, destructive},
+		{"su -cCMD attached", "Bash", `su '-crm -rf /'`, destructive},
 
 		// H3: secret reads.
 		{"ln then cat", "Bash", `ln -s .env notes.txt && cat notes.txt`, secret},

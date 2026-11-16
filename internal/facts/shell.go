@@ -254,19 +254,6 @@ func (a *shellAnalyzer) call(c *syntax.CallExpr, in stdinSource) {
 
 // command classifies one simple command after wrappers are stripped.
 func (a *shellAnalyzer) command(args []arg, in stdinSource) {
-	// flock [opts] FILE -c 'cmd' runs cmd through a shell.
-	if len(args) > 1 && args[0].lit && cmdName(args[0].text) == "flock" {
-		for i := 1; i < len(args); i++ {
-			if (args[i].text == "-c" || args[i].text == "--command") && i+1 < len(args) {
-				if !args[i+1].lit {
-					a.f.opaque("flock -c with code built at run time")
-				} else {
-					a.f.merge(shellDepth(args[i+1].text, a.depth+1, a.opts))
-				}
-				return
-			}
-		}
-	}
 	unwrapped := unwrap(args)
 	// `env` with no command prints the whole environment.
 	if len(unwrapped) == 0 && len(args) > 0 && args[0].lit && cmdName(args[0].text) == "env" {
@@ -764,8 +751,24 @@ func (a *shellAnalyzer) switchUser(name string, rest []arg) {
 	}
 	for i := 0; i < len(rest); i++ {
 		t := rest[i].text
+		if isShortCluster(t) && strings.Contains(t, "c") && t != "-c" {
+			// A cluster walked letter by letter: -lc CMD, -cCMD, -lcCMD.
+			for j, r := range t[1:] {
+				if r == 'c' {
+					if v := t[2+j:]; v != "" {
+						code(v, rest[i].lit)
+					} else if i+1 < len(rest) {
+						code(rest[i+1].text, rest[i+1].lit)
+					}
+					return
+				}
+				if r == 's' || r == 'g' || r == 'G' || r == 'u' || r == 'w' {
+					break // these take a value: c cannot follow in this word
+				}
+			}
+		}
 		switch {
-		case t == "-c" || t == "--command" || t == "--session-command" || isShortCluster(t) && strings.HasSuffix(t, "c"):
+		case t == "-c" || t == "--command" || t == "--session-command":
 			if i+1 < len(rest) {
 				code(rest[i+1].text, rest[i+1].lit)
 			}
@@ -908,14 +911,13 @@ func (a *shellAnalyzer) awkProgram(p string) {
 		}
 		idx += 1 + next
 	}
-	// A pipe outside string literals that is not a logical || connects to
-	// a command.
-	if awkPipe.MatchString(stringLit.ReplaceAllString(p, `""`)) {
-		a.f.opaque("awk pipes to or from a shell command")
+	// Any | that is not part of a logical || may pipe to or from a command.
+	// Literal-stripping can be fooled by a quote inside a comment or regex,
+	// so this deliberately does not try to tell a "|" in a string apart.
+	if strings.Contains(strings.ReplaceAll(p, "||", ""), "|") {
+		a.f.opaque("awk may pipe to or from a shell command")
 	}
 }
-
-var awkPipe = regexp.MustCompile(`(^|[^|])\|&?([^|]|$)`)
 
 // balancedParen returns the text inside the parenthesis s starts with,
 // honouring string literals.
@@ -963,6 +965,8 @@ func (a *shellAnalyzer) sedExec(rest []arg) {
 		case t == "-f" || t == "--file" || strings.HasPrefix(t, "--file="):
 			a.f.opaque("sed runs a script from a file")
 			return
+		case t == "--line-length":
+			i++
 		case isShortCluster(t):
 			// -ne 'script', -eSCRIPT, -nf file: options until one takes a value.
 			for j, r := range t[1:] {
@@ -980,8 +984,14 @@ func (a *shellAnalyzer) sedExec(rest []arg) {
 					explicit = true
 					break
 				}
-				if r == 'l' || r == 'i' && j == len(t)-2 {
-					break // -l N, -i[SUFFIX]: the rest is a value
+				if r == 'l' {
+					if j == len(t)-2 {
+						i++ // -l N: the value is the next word
+					}
+					break
+				}
+				if r == 'i' {
+					break // -i[SUFFIX]: the rest is a value
 				}
 			}
 		case strings.HasPrefix(t, "-"):
@@ -1037,12 +1047,19 @@ func blankSedBodies(script string) string {
 			b.WriteByte(c)
 			b.WriteByte(';') // flags follow; the body is gone
 			i = j - 1
-		case c == '/':
-			j := i + 1
-			for j < len(script) && script[j] != '/' {
+		case c == '/' || c == '\\' && i+1 < len(script):
+			// /re/ or \cREc (any delimiter c), then I/M modifiers.
+			delim, j := byte('/'), i+1
+			if c == '\\' {
+				delim, j = script[i+1], i+2
+			}
+			for j < len(script) && script[j] != delim {
 				if script[j] == '\\' {
 					j++
 				}
+				j++
+			}
+			for j+1 < len(script) && (script[j+1] == 'I' || script[j+1] == 'M') {
 				j++
 			}
 			b.WriteString("1") // an address
@@ -1282,6 +1299,14 @@ func unwrap(args []arg) []arg {
 		default:
 			return args
 		}
+		// flock [opts] FILE -c 'cmd' (anywhere, in a cluster, or
+		// --command=cmd) runs cmd through a shell: rewrite it to sh -c cmd
+		// so the shell path judges it.
+		if name == "flock" {
+			if code, ok := flockCommand(args[1:]); ok {
+				return []arg{{text: "sh", lit: true}, {text: "-c", lit: true}, code}
+			}
+		}
 		i := 1
 		for i < len(args) {
 			t := args[i].text
@@ -1321,6 +1346,38 @@ func unwrap(args []arg) []arg {
 	return args
 }
 
+// flockCommand finds flock's -c/--command value: alone, as the last letter
+// of a short cluster, attached (-cCMD), or --command=CMD.
+func flockCommand(rest []arg) (arg, bool) {
+	for i, x := range rest {
+		t := x.text
+		switch {
+		case t == "--command" || isLongPrefix(t, "--command") && !strings.Contains(t, "="):
+			if i+1 < len(rest) {
+				return rest[i+1], true
+			}
+		case strings.HasPrefix(t, "--command="):
+			return arg{text: strings.TrimPrefix(t, "--command="), lit: x.lit}, true
+		case isShortCluster(t):
+			for j, r := range t[1:] {
+				if r == 'c' {
+					if v := t[2+j:]; v != "" {
+						return arg{text: v, lit: x.lit}, true
+					}
+					if i+1 < len(rest) {
+						return rest[i+1], true
+					}
+					return arg{}, false
+				}
+				if r == 'w' || r == 'E' {
+					break // these take a value
+				}
+			}
+		}
+	}
+	return arg{}, false
+}
+
 // envSplitString recognises env's -S / --split-string at args[i] (alone,
 // attached, inside a short cluster, or with =) and returns its value and
 // how many words it used.
@@ -1357,6 +1414,11 @@ func envSplitString(args []arg, i int) (string, int, bool) {
 // would, for the words of one simple command. Anything the analyzer cannot
 // read that way becomes a single computed word, which is opaque.
 func splitCommandWords(s string) []arg {
+	// env -S has its own escapes (\_, \c, ${VAR}, # comments) that bash
+	// parsing does not reproduce: any of them makes the value opaque.
+	if strings.ContainsAny(s, `\$#`) {
+		return []arg{{text: s, lit: false}}
+	}
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(s), "")
 	if err == nil && len(file.Stmts) == 1 {
 		if call, ok := file.Stmts[0].Cmd.(*syntax.CallExpr); ok && len(call.Assigns) == 0 {
